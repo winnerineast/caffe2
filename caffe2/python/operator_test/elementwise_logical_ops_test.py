@@ -1,3 +1,18 @@
+# Copyright (c) 2016-present, Facebook, Inc.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+##############################################################################
+
 from __future__ import absolute_import
 from __future__ import division
 from __future__ import print_function
@@ -37,7 +52,7 @@ class TestWhere(hu.HypothesisTestCase):
 
     @given(N=st.integers(min_value=1, max_value=10),
            engine=st.sampled_from(["", "CUDNN"]),
-           **hu.gcs)
+           **hu.gcs_cpu_only)
     def test_where(self, N, gc, dc, engine):
         C = np.random.rand(N).astype(bool)
         X = np.random.rand(N).astype(np.float32)
@@ -48,7 +63,7 @@ class TestWhere(hu.HypothesisTestCase):
 
     @given(N=st.integers(min_value=1, max_value=10),
            engine=st.sampled_from(["", "CUDNN"]),
-           **hu.gcs)
+           **hu.gcs_cpu_only)
     def test_where_dim2(self, N, gc, dc, engine):
         C = np.random.rand(N, N).astype(bool)
         X = np.random.rand(N, N).astype(np.float32)
@@ -74,7 +89,7 @@ class TestRowWhere(hu.HypothesisTestCase):
 
     @given(N=st.integers(min_value=1, max_value=10),
            engine=st.sampled_from(["", "CUDNN"]),
-           **hu.gcs)
+           **hu.gcs_cpu_only)
     def test_rowwhere(self, N, gc, dc, engine):
         C = np.random.rand(N).astype(bool)
         X = np.random.rand(N).astype(np.float32)
@@ -91,7 +106,7 @@ class TestRowWhere(hu.HypothesisTestCase):
 
     @given(N=st.integers(min_value=1, max_value=10),
            engine=st.sampled_from(["", "CUDNN"]),
-           **hu.gcs)
+           **hu.gcs_cpu_only)
     def test_rowwhere_dim2(self, N, gc, dc, engine):
         C = np.random.rand(N).astype(bool)
         X = np.random.rand(N, N).astype(np.float32)
@@ -111,7 +126,7 @@ class TestIsMemberOf(hu.HypothesisTestCase):
 
     @given(N=st.integers(min_value=1, max_value=10),
            engine=st.sampled_from(["", "CUDNN"]),
-           **hu.gcs)
+           **hu.gcs_cpu_only)
     def test_is_member_of(self, N, gc, dc, engine):
         X = np.random.randint(10, size=N).astype(np.int64)
         values = [0, 3, 4, 6, 8]

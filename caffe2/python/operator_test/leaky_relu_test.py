@@ -1,3 +1,18 @@
+# Copyright (c) 2016-present, Facebook, Inc.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+##############################################################################
+
 from __future__ import absolute_import
 from __future__ import division
 from __future__ import print_function
@@ -5,16 +20,15 @@ from __future__ import print_function
 import numpy as np
 from hypothesis import given, assume
 import hypothesis.strategies as st
-from itertools import izip
 
-from caffe2.python import core, cnn
+from caffe2.python import core, model_helper
 import caffe2.python.hypothesis_test_util as hu
 
 
 class TestLeakyRelu(hu.HypothesisTestCase):
 
     def _get_inputs(self, N, C, H, W, order):
-        input_data = np.random.rand(N, C, H, W).astype(np.float32)
+        input_data = np.random.rand(N, C, H, W).astype(np.float32) - 0.5
 
         # default step size is 0.05
         input_data[np.logical_and(
@@ -39,7 +53,7 @@ class TestLeakyRelu(hu.HypothesisTestCase):
 
     def _feed_inputs(self, input_blobs, device_option):
         names = ['input', 'scale', 'bias']
-        for name, blob in izip(names, input_blobs):
+        for name, blob in zip(names, input_blobs):
             self.ws.create_blob(name).feed(blob, device_option=device_option)
 
     @given(gc=hu.gcs['gc'],
@@ -148,9 +162,10 @@ class TestLeakyRelu(hu.HypothesisTestCase):
            order=st.sampled_from(['NCHW', 'NHWC']),
            alpha=st.floats(0, 1),
            seed=st.integers(0, 1000))
-    def test_leaky_relu_cnn_helper(self, N, C, H, W, order, alpha, seed):
+    def test_leaky_relu_model_helper_helper(self, N, C, H, W, order, alpha, seed):
         np.random.seed(seed)
-        model = cnn.CNNModelHelper(order=order)
+        arg_scope = {'order': order}
+        model = model_helper.ModelHelper(name="test_model", arg_scope=arg_scope)
         model.LeakyRelu(
             'input',
             'output',

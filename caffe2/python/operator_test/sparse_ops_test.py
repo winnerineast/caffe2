@@ -1,3 +1,18 @@
+# Copyright (c) 2016-present, Facebook, Inc.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+##############################################################################
+
 from __future__ import absolute_import
 from __future__ import division
 from __future__ import print_function
@@ -31,7 +46,7 @@ class TestScatterOps(hu.HypothesisTestCase):
             r = d.copy()
             for i in ind:
                 r[i] *= w0
-            for i in xrange(0, len(args), 2):
+            for i in range(0, len(args), 2):
                 x = args[i]
                 w = args[i+1]
                 for i, j in enumerate(ind):
@@ -46,7 +61,7 @@ class TestScatterOps(hu.HypothesisTestCase):
         else:
             w0 = rand_array()
         inputs = [d, w0, ind]
-        for inp in range(1, num_args + 1):
+        for _ in range(1, num_args + 1):
             x = rand_array(index_dim, *extra_dims)
             w = rand_array()
             inputs.extend([x,w])
@@ -55,10 +70,11 @@ class TestScatterOps(hu.HypothesisTestCase):
     @given(first_dim=st.integers(1, 20),
            index_dim=st.integers(1, 10),
            extra_dims=st.lists(st.integers(1, 4), min_size=0, max_size=3),
+           data_type=st.sampled_from([np.float16, np.float32, np.int32, np.int64]),
            ind_type=st.sampled_from([np.int32, np.int64]),
-           **hu.gcs_cpu_only)
+           **hu.gcs)
     def testScatterAssign(
-        self, first_dim, index_dim, extra_dims, ind_type, gc, dc):
+            self, first_dim, index_dim, extra_dims, data_type, ind_type, gc, dc):
         op = core.CreateOperator('ScatterAssign',
                                  ['data', 'indices', 'slices'], ['data'])
         def ref(d, ind, x):
@@ -69,10 +85,10 @@ class TestScatterOps(hu.HypothesisTestCase):
         # let's have indices unique
         if first_dim < index_dim:
             first_dim, index_dim = index_dim, first_dim
-        d = rand_array(first_dim, *extra_dims)
+        d = (rand_array(first_dim, *extra_dims) * 10).astype(data_type)
         ind = np.random.choice(first_dim, index_dim,
                                replace=False).astype(ind_type)
-        x = rand_array(index_dim, *extra_dims)
+        x = (rand_array(index_dim, *extra_dims) * 10).astype(data_type)
         self.assertReferenceChecks(gc, op, [d, ind, x], ref, threshold=1e-3)
 
 if __name__ == "__main__":

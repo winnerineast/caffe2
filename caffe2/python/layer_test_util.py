@@ -1,3 +1,18 @@
+# Copyright (c) 2016-present, Facebook, Inc.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+##############################################################################
+
 ## @package layer_test_util
 # Module caffe2.python.layer_test_util
 from __future__ import absolute_import
@@ -14,11 +29,17 @@ from caffe2.python import (
     schema,
     test_util,
     workspace,
+    utils,
 )
+from caffe2.proto import caffe2_pb2
 import numpy as np
 
 
-OpSpec = namedtuple("OpSpec", "type input output")
+class OpSpec(namedtuple("OpSpec", "type input output arg")):
+
+    def __new__(cls, op_type, op_input, op_output, op_arg=None):
+        return super(OpSpec, cls).__new__(cls, op_type, op_input,
+                                          op_output, op_arg)
 
 
 class LayersTestCase(test_util.TestCase):
@@ -74,13 +95,15 @@ class LayersTestCase(test_util.TestCase):
         workspace.RunNetOnce(train_init_net)
         workspace.RunNetOnce(train_net)
 
-    def run_train_net_forward_only(self):
+    def run_train_net_forward_only(self, num_iter=1):
         self.model.output_schema = schema.Struct()
         train_init_net, train_net = \
             layer_model_instantiator.generate_training_nets_forward_only(
                 self.model)
         workspace.RunNetOnce(train_init_net)
-        workspace.RunNetOnce(train_net)
+        assert num_iter > 0, 'num_iter must be larger than 0'
+        workspace.CreateNet(train_net)
+        workspace.RunNet(train_net.Proto().name, num_iter=num_iter)
 
     def assertBlobsEqual(self, spec_blobs, op_blobs):
         """
@@ -96,6 +119,21 @@ class LayersTestCase(test_util.TestCase):
                 continue
             self.assertEqual(spec_blob, op_blob)
 
+    def assertArgsEqual(self, spec_args, op_args):
+        self.assertEqual(len(spec_args), len(op_args))
+        keys = [a.name for a in op_args]
+
+        def parse_args(args):
+            operator = caffe2_pb2.OperatorDef()
+            # Generate the expected value in the same order
+            for k in keys:
+                v = args[k]
+                arg = utils.MakeArgument(k, v)
+                operator.arg.add().CopyFrom(arg)
+            return operator.arg
+
+        self.assertEqual(parse_args(spec_args), op_args)
+
     def assertNetContainOps(self, net, op_specs):
         """
         Given a net and a list of OpSpec's, check that the net match the spec
@@ -106,4 +144,6 @@ class LayersTestCase(test_util.TestCase):
             self.assertEqual(op_spec.type, op.type)
             self.assertBlobsEqual(op_spec.input, op.input)
             self.assertBlobsEqual(op_spec.output, op.output)
+            if op_spec.arg is not None:
+                self.assertArgsEqual(op_spec.arg, op.arg)
         return ops

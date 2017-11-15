@@ -1,3 +1,19 @@
+/**
+ * Copyright (c) 2016-present, Facebook, Inc.
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
 #include "caffe2/core/context_gpu.h"
 #include "caffe2/operators/leaky_relu_op.h"
 
@@ -16,11 +32,11 @@ template <typename T>
 __global__ void LeakyReluGradientKernel(
     const int N,
     const T alpha,
-    const T* X,
+    const T* Y,
     const T* dY,
     T* dX) {
   CUDA_1D_KERNEL_LOOP(i, N) {
-    dX[i] = X[i] >= 0 ? dY[i] : dY[i] * alpha;
+    dX[i] = Y[i] >= 0 ? dY[i] : dY[i] * alpha;
   }
 }
 } // namespace
@@ -42,28 +58,26 @@ bool LeakyReluOp<float, CUDAContext>::RunOnDevice() {
 
 template <>
 bool LeakyReluGradientOp<float, CUDAContext>::RunOnDevice() {
-  const auto& X = Input(0);
+  const auto& Y = Input(0);
   const auto& dY = Input(1);
   auto* dX = Output(0);
-  dX->ResizeLike(X);
-  CAFFE_ENFORCE_EQ(X.size(), dY.size());
+  dX->ResizeLike(Y);
+  CAFFE_ENFORCE_EQ(Y.size(), dY.size());
   LeakyReluGradientKernel<<<
-      CAFFE_GET_BLOCKS(X.size()),
+      CAFFE_GET_BLOCKS(Y.size()),
       CAFFE_CUDA_NUM_THREADS,
       0,
       context_.cuda_stream()>>>(
-      X.size(),
+      Y.size(),
       alpha_,
-      X.data<float>(),
+      Y.data<float>(),
       dY.data<float>(),
       dX->mutable_data<float>());
   return true;
 }
 
-namespace {
 REGISTER_CUDA_OPERATOR(LeakyRelu, LeakyReluOp<float, CUDAContext>);
 REGISTER_CUDA_OPERATOR(
     LeakyReluGradient,
     LeakyReluGradientOp<float, CUDAContext>);
-} // namespace
 } // namespace caffe2

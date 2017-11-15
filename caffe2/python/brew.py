@@ -1,3 +1,18 @@
+# Copyright (c) 2016-present, Facebook, Inc.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+##############################################################################
+
 ## @package model_helper_api
 # Module caffe2.python.model_helper_api
 from __future__ import absolute_import
@@ -7,6 +22,9 @@ from __future__ import unicode_literals
 
 import sys
 import copy
+import inspect
+from past.builtins import basestring
+from caffe2.python.model_helper import ModelHelper
 
 # flake8: noqa
 from caffe2.python.helpers.dropout import *
@@ -20,6 +38,7 @@ from caffe2.python.helpers.algebra import *
 from caffe2.python.helpers.train import *
 from caffe2.python.helpers.conv import *
 from caffe2.python.helpers.tools import *
+from caffe2.python.helpers.elementwise_linear import *
 
 
 class HelperWrapper(object):
@@ -40,6 +59,7 @@ class HelperWrapper(object):
         'spatial_bn': spatial_bn,
         'relu': relu,
         'prelu': prelu,
+        'tanh': tanh,
         'concat': concat,
         'depth_concat': depth_concat,
         'sum': sum,
@@ -54,6 +74,9 @@ class HelperWrapper(object):
         'image_input': image_input,
         'video_input': video_input,
         'add_weight_decay': add_weight_decay,
+        'elementwise_linear': elementwise_linear,
+        'layer_norm': layer_norm,
+        'batch_mat_mul' : batch_mat_mul,
     }
 
     def __init__(self, wrapped):
@@ -67,10 +90,30 @@ class HelperWrapper(object):
             )
 
         def scope_wrapper(*args, **kwargs):
+            new_kwargs = {}
+            if helper_name != 'arg_scope':
+                if len(args) > 0 and isinstance(args[0], ModelHelper):
+                    model = args[0]
+                elif 'model' in kwargs:
+                    model = kwargs['model']
+                else:
+                    raise RuntimeError(
+                "The first input of helper function should be model. " \
+                "Or you can provide it in kwargs as model=<your_model>.")
+                new_kwargs = copy.deepcopy(model.arg_scope)
+            func = self._registry[helper_name]
+            var_names, _, varkw, _= inspect.getargspec(func)
+            if varkw is None:
+                # this helper function does not take in random **kwargs
+                new_kwargs = {
+                    var_name: new_kwargs[var_name]
+                    for var_name in var_names if var_name in new_kwargs
+                }
+
             cur_scope = get_current_scope()
-            new_kwargs = copy.deepcopy(cur_scope.get(helper_name, {}))
+            new_kwargs.update(cur_scope.get(helper_name, {}))
             new_kwargs.update(kwargs)
-            return self._registry[helper_name](*args, **new_kwargs)
+            return func(*args, **new_kwargs)
 
         scope_wrapper.__name__ = helper_name
         return scope_wrapper

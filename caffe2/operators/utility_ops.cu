@@ -1,3 +1,19 @@
+/**
+ * Copyright (c) 2016-present, Facebook, Inc.
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
 #include <math.h>
 #include <cfloat>
 // TODO(jamesreed): I would use <cmath> here but std::isnan
@@ -14,6 +30,9 @@
 
 namespace caffe2 {
 CAFFE_KNOWN_TYPE(const float*);
+
+REGISTER_CUDA_OPERATOR(EnsureDense, EnsureDenseOp<CUDAContext>);
+
 
 __global__ void NanCheckKernel(int N, const float* X, bool* result) {
   bool has_nan = false;
@@ -61,7 +80,7 @@ bool NanCheckOp<CUDAContext>::RunOnDevice() {
 
   // Print out diagnostic info if we have a NaN or inf
   if (result) {
-    std::cerr << "Tensor contained NaN or inf: " << this->def().input(0)
+    std::cerr << "Tensor contained NaN or inf: " << this->debug_def().input(0)
               << std::endl;
 
     for (int j = 0; j < InputSize(); j++) {
@@ -77,8 +96,8 @@ bool NanCheckOp<CUDAContext>::RunOnDevice() {
         cpu_X.CopyFrom(Input(j), &context_);
       }
       context_.FinishDeviceComputation();
-      std::cerr << "Input tensor: " << j << ": [" << def().input(j) << "]"
-                << std::endl;
+      std::cerr << "Input tensor: " << j << ": [" << this->debug_def().input(j)
+                << "]" << std::endl;
       tensorPrinter_.Print<float>(cpu_X);
 
       if (j == 0) {
@@ -134,6 +153,41 @@ bool MaxOp<float, CUDAContext>::Compute() {
 }
 
 REGISTER_CUDA_OPERATOR(Max, MaxOp<float, CUDAContext>);
+REGISTER_CUDA_OPERATOR(MaxGradient, MaxGradientOp<float, CUDAContext>);
+
+template <typename T>
+__global__ void
+MaxGradKernel(int N, const T* mx, const T* x, const T* go, T* gi) {
+  CUDA_1D_KERNEL_LOOP(i, N) {
+    gi[i] = go[i] * (mx[i] == x[i]);
+  }
+}
+
+template <>
+bool MaxGradientOp<float, CUDAContext>::RunOnDevice() {
+  auto& output = Input(0);
+  auto& grad_output = Input(1);
+  const int kInputStartOffset = 2;
+
+  const float* data = output.data<float>();
+
+  for (int i = 0; i < OutputSize(); i++) {
+    auto& input = Input(i + kInputStartOffset);
+    auto* grad_input = Output(i);
+    grad_input->ResizeLike(input);
+    MaxGradKernel<<<
+        CAFFE_GET_BLOCKS(input.size()),
+        CAFFE_CUDA_NUM_THREADS,
+        0,
+        context_.cuda_stream()>>>(
+        input.size(),
+        output.data<float>(),
+        input.data<float>(),
+        grad_output.data<float>(),
+        grad_input->mutable_data<float>());
+  }
+  return true;
+}
 
 template<typename T_INDEX>
 __global__ void
@@ -176,6 +230,12 @@ bool GatherOp<CUDAContext>::DoRunWithType() {
   auto src_base = static_cast<const float*>(data.raw_data());
   const Index* idxs = indices.template data<Index>();
   auto out = static_cast<float*>(output->raw_mutable_data(data.meta()));
+
+  // return early when the input is empty, since CUDA kernel will fail for
+  // empty input.
+  if (N <= 0) {
+    return true;
+  }
 
   GatherKernel<<<
       std::min(N, CAFFE_MAXIMUM_NUM_BLOCKS),
@@ -230,16 +290,16 @@ bool ScatterWeightedSumOp<float, CUDAContext>::RunOnDevice() {
 template <>
 template <typename Index>
 bool ScatterWeightedSumOp<float,CUDAContext>::DoRunWithType() {
-  DCHECK_EQ(InputSize() % 2, 1);
+  CAFFE_ENFORCE_EQ(InputSize() % 2, 1);
   auto& X0 = Input(0);
   auto& weight0 = Input(1);
   auto& indices = Input(2);
   auto* output = Output(0);
 
   CAFFE_ENFORCE_EQ(&X0, output, "In place operation is required");
-  DCHECK_GT(X0.size(), 0);
-  DCHECK_GT(X0.ndim(), 0) << "X0 has to be at least the vector";
-  DCHECK_EQ(weight0.size(), 1);
+  CAFFE_ENFORCE_GT(X0.size(), 0);
+  CAFFE_ENFORCE_GT(X0.ndim(), 0, "X0 has to be at least the vector");
+  CAFFE_ENFORCE_EQ(weight0.size(), 1);
 
   TIndex M = X0.size();
   TIndex N = X0.dim(0);
@@ -294,6 +354,47 @@ REGISTER_CUDA_OPERATOR(
     ScatterWeightedSum,
     ScatterWeightedSumOp<float, CUDAContext>);
 
+namespace {
+
+template <typename Index, typename T>
+__global__ void scatter_assign_kernel(
+    T* data,
+    const Index* idxs,
+    const T* slicesData,
+    TIndex N,
+    TIndex K,
+    TIndex block_size) {
+  for (TIndex i = blockIdx.x; i < K; i += gridDim.x) {
+    Index idx = idxs[i];
+    CUDA_KERNEL_ASSERT(0 <= idx && idx < N);
+    const T* src = slicesData + block_size * i;
+    T* dest = data + block_size * idx;
+    for (TIndex j = threadIdx.x; j < block_size; j += blockDim.x) {
+      dest[j] = src[j];
+    }
+  }
+}
+
+} // namespace
+
+template <>
+template <typename Index, typename T>
+void ScatterAssignOp<CUDAContext>::DoScatterAssign(
+    T* data,
+    const Index* idxs,
+    const T* slicesData,
+    TIndex N,
+    TIndex K,
+    TIndex block_size) {
+  scatter_assign_kernel<<<
+      std::min(K, static_cast<TIndex>(CAFFE_MAXIMUM_NUM_BLOCKS)),
+      CAFFE_CUDA_NUM_THREADS,
+      0,
+      context_.cuda_stream()>>>(data, idxs, slicesData, N, K, block_size);
+}
+
+REGISTER_CUDA_OPERATOR(ScatterAssign, ScatterAssignOp<CUDAContext>);
+
 #if THRUST_VERSION >= 100800
 __global__ void remap_kernel(
     thrust::device_ptr<int> second_order,
@@ -335,7 +436,7 @@ void UniqueOp<CUDAContext>::DoRun() {
   context_.template CopyItems<CUDAContext, CUDAContext>(
       inputTensor.meta(), N, input, buffer);
 
-  // Create two vector of {0, 1, ..., N-1} on CUDA device
+  // Create two vectors of {0, 1, ..., N-1} on CUDA device
   thrust::device_vector<int> order1(N), order2(N);
   thrust::sequence(
       thrust::cuda::par.on(context_.cuda_stream()),
@@ -391,9 +492,32 @@ void UniqueOp<CUDAContext>::DoRun() {
         order2.data(), order1.data(), remapping, N, K);
   }
 }
-namespace {
 REGISTER_CUDA_OPERATOR(Unique, UniqueOp<CUDAContext>);
-} // namespace
 #endif // THRUST_VERSION >= 100800
 
+REGISTER_CUDA_OPERATOR(Size, SizeOp<CUDAContext>);
+
+template <typename T>
+__global__ void RangeKernel(const int n, T* Y, T offset, T step) {
+  CUDA_1D_KERNEL_LOOP(index, n) {
+    Y[index] = index * step + offset;
+  }
+}
+
+template <>
+template <typename T>
+bool RangeOp<CUDAContext>::DoRunOnDevice(
+    const T& start,
+    const T& step,
+    Tensor<CUDAContext>* output) {
+  int N = output->size();
+  RangeKernel<<<
+      CAFFE_GET_BLOCKS(N),
+      CAFFE_CUDA_NUM_THREADS,
+      0,
+      context_.cuda_stream()>>>(N, output->mutable_data<T>(), start, step);
+  return true;
+}
+
+REGISTER_CUDA_OPERATOR(Range, RangeOp<CUDAContext>);
 }  // namespace caffe2

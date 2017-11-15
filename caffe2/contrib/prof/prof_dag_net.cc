@@ -1,3 +1,19 @@
+/**
+ * Copyright (c) 2016-present, Facebook, Inc.
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
 #include "prof_dag_net.h"
 
 #include <cmath>
@@ -7,7 +23,9 @@
 
 namespace caffe2 {
 
-ProfDAGNet::ProfDAGNet(const NetDef& net_def, Workspace* ws)
+ProfDAGNet::ProfDAGNet(
+    const std::shared_ptr<const NetDef>& net_def,
+    Workspace* ws)
     : DAGNetBase(net_def, ws), time_per_op_(operator_nodes_.size()) {
   VLOG(1) << "Constructing ProfDAGNet " << name_;
 }
@@ -21,12 +39,34 @@ ProfDAGNet::~ProfDAGNet() {
   PrintStats();
 }
 
-bool ProfDAGNet::Run() {
+void ProfDAGNet::ValidateOpTensorDevices() {
+  bool had_mismatches = false;
+  for (int idx = 0; idx < operator_nodes_.size(); idx++) {
+    const auto& node = operator_nodes_[idx];
+    auto mismatches =
+        ValidateTensorDevices(*node.operator_, node.operator_->debug_def());
+    for (auto& mismatch : mismatches) {
+      had_mismatches = true;
+      LOG(INFO) << "== PERFORMANCE WARNING == \n"
+                << " Operator " << node.operator_->debug_def().type()
+                << " expects GPU " << mismatch.second.first.cuda_gpu_id()
+                << " but tensor [" << mismatch.first << "] is on GPU "
+                << mismatch.second.second.cuda_gpu_id();
+    }
+  }
+  if (!had_mismatches) {
+    LOG(INFO) << "Analyzed operator & blob GPU assignments -- no mismatches";
+  }
+}
+
+bool ProfDAGNet::DoRunAsync() {
   runs_++;
 
   // don't collect statistics from first run
   if (runs_ <= 1) {
-    return DAGNetBase::Run();
+    bool success = DAGNetBase::DoRunAsync();
+    ValidateOpTensorDevices();
+    return success;
   }
 
   CAFFE_ENFORCE(
@@ -39,15 +79,16 @@ bool ProfDAGNet::Run() {
 
   // create a copy and later collect the differences
   vector<Stats> time_per_op_run(time_per_op_);
-  bool success = DAGNetBase::Run();
+  bool success = DAGNetBase::DoRunAsync();
 
   // aggregate this run's stats per operator type
   CaffeMap<string, float> time_per_op_type_run;
   for (int idx = 0; idx < operator_nodes_.size(); idx++) {
     const auto& node = operator_nodes_[idx];
-    const string& op_type = node.operator_->def().type();
+    const string& op_type = node.operator_->debug_def().type();
     time_per_op_type_run[op_type] +=
         time_per_op_[idx].sum - time_per_op_run[idx].sum;
+    time_per_op_type_[op_type].cnt += 1;
   }
 
   for (const auto& item : time_per_op_type_run) {
@@ -77,7 +118,7 @@ ProfDAGProtos ProfDAGNet::GetOperatorStats() {
   return prof_dag_protos;
 }
 
-bool ProfDAGNet::RunAt(const std::vector<int>& chain) {
+bool ProfDAGNet::RunAt(int /* unused */, const std::vector<int>& chain) {
   bool success = true;
   Timer timer;
   for (const auto idx : chain) {
@@ -117,12 +158,12 @@ void ProfDAGNet::PrintStats() {
   int measured_runs = runs_ - 1;
 
   for (int idx = 0; idx < operator_nodes_.size(); idx++) {
-    auto& node = operator_nodes_[idx];
-    const string& op_type = node.operator_->def().type();
-    const string& print_name = node.operator_->def().name().size()
-        ? node.operator_->def().name()
-        : (node.operator_->def().output_size() ? node.operator_->def().output(0)
-                                               : "NO_OUTPUT");
+    const auto& op = operator_nodes_[idx].operator_;
+    const auto& def = op->debug_def();
+    const string& op_type = def.type();
+    const string& print_name = def.name().size()
+        ? def.name()
+        : (op->OutputSize() ? def.output(0) : "NO_OUTPUT");
 
     float mean = time_per_op_[idx].sum / measured_runs;
     float stddev =
@@ -137,7 +178,8 @@ void ProfDAGNet::PrintStats() {
     float stddev = std::sqrt(item.second.sqrsum / measured_runs - mean * mean);
     LOG(INFO) << std::setw(10) << std::setfill(' ') << mean << " ms/iter ("
               << std::setw(10) << std::setfill(' ') << stddev << " ms/iter) "
-              << item.first;
+              << " Count per iter: " << (item.second.cnt / measured_runs)
+              << "  " << item.first;
   }
 }
 

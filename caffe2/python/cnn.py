@@ -1,3 +1,18 @@
+# Copyright (c) 2016-present, Facebook, Inc.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+##############################################################################
+
 ## @package cnn
 # Module caffe2.python.cnn
 from __future__ import absolute_import
@@ -8,6 +23,7 @@ from __future__ import unicode_literals
 from caffe2.python import brew
 from caffe2.python.model_helper import ModelHelper
 from caffe2.proto import caffe2_pb2
+import logging
 
 
 class CNNModelHelper(ModelHelper):
@@ -20,12 +36,27 @@ class CNNModelHelper(ModelHelper):
                  ws_nbytes_limit=None, init_params=True,
                  skip_sparse_optim=False,
                  param_model=None):
+        logging.warning(
+            "[====DEPRECATE WARNING====]: you are creating an "
+            "object from CNNModelHelper class which will be deprecated soon. "
+            "Please use ModelHelper object with brew module. For more "
+            "information, please refer to caffe2.ai and python/brew.py, "
+            "python/brew_test.py for more information."
+        )
 
+        cnn_arg_scope = {
+            'order': order,
+            'use_cudnn': use_cudnn,
+            'cudnn_exhaustive_search': cudnn_exhaustive_search,
+        }
+        if ws_nbytes_limit:
+            cnn_arg_scope['ws_nbytes_limit'] = ws_nbytes_limit
         super(CNNModelHelper, self).__init__(
             skip_sparse_optim=skip_sparse_optim,
             name="CNN" if name is None else name,
             init_params=init_params,
             param_model=param_model,
+            arg_scope=cnn_arg_scope,
         )
 
         self.order = order

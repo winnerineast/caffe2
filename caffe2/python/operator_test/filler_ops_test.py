@@ -1,3 +1,18 @@
+# Copyright (c) 2016-present, Facebook, Inc.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+##############################################################################
+
 from __future__ import absolute_import
 from __future__ import division
 from __future__ import print_function
@@ -6,10 +21,17 @@ from __future__ import unicode_literals
 import hypothesis.strategies as st
 
 from caffe2.python import core, workspace
+from caffe2.proto import caffe2_pb2
 from hypothesis import given
 import caffe2.python.hypothesis_test_util as hu
 
 import numpy as np
+
+
+def _fill_diagonal(shape, value):
+    result = np.zeros(shape)
+    np.fill_diagonal(result, value)
+    return (result,)
 
 
 class TestFillerOperator(hu.HypothesisTestCase):
@@ -51,29 +73,100 @@ class TestFillerOperator(hu.HypothesisTestCase):
         ),
         a=st.integers(min_value=0, max_value=100),
         b=st.integers(min_value=0, max_value=100),
-        **hu.gcs_cpu_only
+        **hu.gcs
     )
     def test_uniform_int_fill_op_blob_input(self, shape, a, b, gc, dc):
         net = core.Net('test_net')
-        shape_blob = net.Const(shape, dtype=np.int64)
+
+        with core.DeviceScope(core.DeviceOption(caffe2_pb2.CPU)):
+            shape_blob = net.Const(shape, dtype=np.int64)
         a_blob = net.Const(a, dtype=np.int32)
         b_blob = net.Const(b, dtype=np.int32)
         uniform_fill = net.UniformIntFill([shape_blob, a_blob, b_blob],
                                           1, input_as_shape=1)
 
-        for device_option in dc:
-            net._net.device_option.CopyFrom(device_option)
-            workspace.RunNetOnce(net)
+        workspace.RunNetOnce(net)
 
-            blob_out = workspace.FetchBlob(uniform_fill)
-            if b < a:
-                new_shape = shape[:]
-                new_shape[0] = 0
-                np.testing.assert_array_equal(new_shape, blob_out.shape)
-            else:
-                np.testing.assert_array_equal(shape, blob_out.shape)
-                self.assertTrue((blob_out >= a).all())
-                self.assertTrue((blob_out <= b).all())
+        blob_out = workspace.FetchBlob(uniform_fill)
+        if b < a:
+            new_shape = shape[:]
+            new_shape[0] = 0
+            np.testing.assert_array_equal(new_shape, blob_out.shape)
+        else:
+            np.testing.assert_array_equal(shape, blob_out.shape)
+            self.assertTrue((blob_out >= a).all())
+            self.assertTrue((blob_out <= b).all())
+
+    @given(
+        **hu.gcs
+    )
+    def test_uniform_fill_using_arg(self, gc, dc):
+        net = core.Net('test_net')
+        shape = [2**3, 5]
+        # uncomment this to test filling large blob
+        # shape = [2**30, 5]
+        min_v = -100
+        max_v = 100
+        output_blob = net.UniformIntFill(
+            [],
+            ['output_blob'],
+            shape=shape,
+            min=min_v,
+            max=max_v,
+        )
+
+        workspace.RunNetOnce(net)
+        output_data = workspace.FetchBlob(output_blob)
+
+        np.testing.assert_array_equal(shape, output_data.shape)
+        min_data = np.min(output_data)
+        max_data = np.max(output_data)
+
+        self.assertGreaterEqual(min_data, min_v)
+        self.assertLessEqual(max_data, max_v)
+
+        self.assertNotEqual(min_data, max_data)
+
+    @given(
+        shape=st.sampled_from(
+            [
+                [3, 3],
+                [5, 5, 5],
+                [7, 7, 7, 7],
+            ]
+        ),
+        **hu.gcs
+    )
+    def test_diagonal_fill_op_float(self, shape, gc, dc):
+        value = 2.5
+        op = core.CreateOperator(
+            'DiagonalFill',
+            [],
+            'out',
+            shape=shape,  # scalar
+            value=value,
+        )
+
+        for device_option in dc:
+            op.device_option.CopyFrom(device_option)
+            # Check against numpy reference
+            self.assertReferenceChecks(gc, op, [shape, value], _fill_diagonal)
+
+    @given(**hu.gcs)
+    def test_diagonal_fill_op_int(self, gc, dc):
+        value = 2
+        shape = [3, 3]
+        op = core.CreateOperator(
+            'DiagonalFill',
+            [],
+            'out',
+            shape=shape,
+            dtype=core.DataType.INT32,
+            value=value,
+        )
+
+        # Check against numpy reference
+        self.assertReferenceChecks(gc, op, [shape, value], _fill_diagonal)
 
     @given(**hu.gcs)
     def test_gaussian_fill_op(self, gc, dc):

@@ -1,3 +1,18 @@
+# Copyright (c) 2016-present, Facebook, Inc.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+##############################################################################
+
 ## @package seq2seq_model_helper
 # Module caffe2.python.models.seq2seq.seq2seq_model_helper
 from __future__ import absolute_import
@@ -6,15 +21,23 @@ from __future__ import print_function
 from __future__ import unicode_literals
 
 from caffe2.python import scope
-from caffe2.python.cnn import CNNModelHelper
+from caffe2.python.model_helper import ModelHelper
 
 
-class Seq2SeqModelHelper(CNNModelHelper):
+class Seq2SeqModelHelper(ModelHelper):
 
     def __init__(self, init_params=True, **kwargs):
+        arg_scope = {
+            'use_cudnn': kwargs.pop('use_cudnn', True),
+            'cudnn_exhaustive_search': kwargs.pop('cudnn_exhaustive_search', False),
+            'order': 'NHWC',
+        }
+        if kwargs.get('ws_nbytes_limit', None):
+            arg_scope['ws_nbytes_limit'] = kwargs.pop('ws_nbytes_limit')
+
         super(Seq2SeqModelHelper, self).__init__(
-            order='NHWC',
             init_params=init_params,
+            arg_scope=arg_scope,
             **kwargs
         )
         self.non_trainable_params = []

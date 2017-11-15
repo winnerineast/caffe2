@@ -1,3 +1,19 @@
+/**
+ * Copyright (c) 2016-present, Facebook, Inc.
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
 #include "caffe2/operators/leaky_relu_op.h"
 
 #include "caffe2/utils/math.h"
@@ -17,21 +33,19 @@ bool LeakyReluOp<float, CPUContext>::RunOnDevice() {
 
 template <>
 bool LeakyReluGradientOp<float, CPUContext>::RunOnDevice() {
-  const auto& X = Input(0);
+  const auto& Y = Input(0);
   const auto& dY = Input(1);
   auto* dX = Output(0);
-  dX->ResizeLike(X);
-  CAFFE_ENFORCE_EQ(X.size(), dY.size());
-  ConstEigenVectorMap<float> Xvec(X.template data<float>(), X.size());
+  dX->ResizeLike(Y);
+  CAFFE_ENFORCE_EQ(Y.size(), dY.size());
+  ConstEigenVectorMap<float> Yvec(Y.template data<float>(), Y.size());
   ConstEigenVectorMap<float> dYvec(dY.template data<float>(), dY.size());
   EigenVectorMap<float> dXvec(dX->template mutable_data<float>(), dX->size());
-  Eigen::VectorXf gtZero = (Xvec.array() >= 0.0f).cast<float>();
+  Eigen::VectorXf gtZero = (Yvec.array() >= 0.0f).cast<float>();
   dXvec = dYvec.array() * gtZero.array() -
       dYvec.array() * (gtZero.array() - 1.0f) * alpha_;
   return true;
 }
-
-namespace {
 
 REGISTER_CPU_OPERATOR(LeakyRelu, LeakyReluOp<float, CPUContext>);
 REGISTER_CPU_OPERATOR(
@@ -43,6 +57,7 @@ OPERATOR_SCHEMA(LeakyRelu)
     .NumOutputs(1)
     .Arg("alpha", "Coefficient of leakage")
     .AllowInplace({{0, 0}})
+    .CostInferenceFunction(PointwiseCostInference<2>)
     .IdenticalTypeAndShape()
     .SetDoc(R"DOC(
 LeakyRelu takes input data (Tensor<T>) and an argument alpha, and produces one
@@ -63,12 +78,11 @@ class GetLeakyReluGradient : public GradientMakerBase {
     return SingleGradientDef(
         "LeakyReluGradient",
         "",
-        vector<string>{I(0), GO(0)},
+        vector<string>{O(0), GO(0)},
         vector<string>{GI(0)});
   }
 };
 
 REGISTER_GRADIENT(LeakyRelu, GetLeakyReluGradient);
 
-} // namespace
 } // namespace caffe2
