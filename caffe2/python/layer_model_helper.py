@@ -50,6 +50,9 @@ class LayerModelHelper(model_helper.ModelHelper):
 
     def __init__(self, name, input_feature_schema, trainer_extra_schema,
                  keep_blobs=False):
+        ''' TODO(amalevich): more documnetation on input args
+        '''
+
         super(LayerModelHelper, self).__init__(name=name)
         self._layer_names = set()
         self._layers = []
@@ -78,6 +81,9 @@ class LayerModelHelper(model_helper.ModelHelper):
         self._init_global_constants()
         self.param_init_net = self.create_init_net('param_init_net')
         self._initialize_params = True
+
+    def clear_output_schema(self):
+        self._output_schema = None
 
     def set_initialize_params(self, initialize_params):
         self._initialize_params = initialize_params

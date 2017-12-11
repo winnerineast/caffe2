@@ -14,13 +14,26 @@
  * limitations under the License.
  */
 
-#include "caffe2/core/context_gpu.h"
-#include "caffe2/operators/operator_fallback_gpu.h"
-#include "caffe2/operators/pack_segments.h"
+#ifndef QUANT_DECOMP_OP_H_
+#define QUANT_DECOMP_OP_H_
+
+#include "caffe2/core/context.h"
+#include "caffe2/core/operator.h"
 
 namespace caffe2 {
-REGISTER_CUDA_OPERATOR(PackSegments, GPUFallbackOp<PackSegmentsOp<CPUContext>>);
-REGISTER_CUDA_OPERATOR(
-    UnpackSegments,
-    GPUFallbackOp<UnpackSegmentsOp<CPUContext>>);
-}
+
+// Decompress a set of tensors compressed using zstd,
+// see quant_decomp_op_test.py for how to compress
+class QuantDecompZstdOp final : public Operator<CPUContext> {
+ public:
+  USE_OPERATOR_FUNCTIONS(CPUContext);
+  QuantDecompZstdOp(const OperatorDef& operator_def, Workspace* ws)
+      : Operator<CPUContext>(operator_def, ws) {}
+
+  ~QuantDecompZstdOp() {}
+
+  bool RunOnDevice() override;
+};
+
+} // namespace caffe2
+#endif // QUANT_DECOMP_OP_H_

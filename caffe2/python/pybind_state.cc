@@ -19,6 +19,7 @@
 #include <pybind11/pybind11.h>
 #include <pybind11/stl.h>
 
+#include "caffe2/contrib/script/compiler.h"
 #include "caffe2/core/asan.h"
 #include "caffe2/core/db.h"
 #include "caffe2/core/operator.h"
@@ -190,52 +191,6 @@ py::object fetchBlob(Workspace* ws, const std::string& name) {
 }
 }
 
-void printPythonStackTrace() {
-  PyObject *type = nullptr, *value = nullptr, *trace = nullptr;
-  PyErr_Fetch(&type, &value, &trace);
-  PyTracebackObject* traceback = reinterpret_cast<PyTracebackObject*>(trace);
-  vector<PyTracebackObject*> trace_vec;
-  while (traceback) {
-    trace_vec.push_back(traceback);
-    traceback = traceback->tb_next;
-  }
-  for (int i = trace_vec.size() - 1; i >= 0; --i) {
-    int line = trace_vec[i]->tb_lineno;
-    const char* filename;
-    const char* funcname;
-    if (PyUnicode_Check(trace_vec[i]->tb_frame->f_code->co_filename)) {
-      auto encoded = PyUnicode_AsEncodedString(
-          trace_vec[i]->tb_frame->f_code->co_filename, "ASCII", "replace");
-      if (encoded != nullptr) {
-        filename = strdup(PyBytes_AS_STRING(encoded));
-        Py_DECREF(encoded);
-      } else {
-        filename = "<unknown>";
-      }
-    } else {
-      filename = PyBytes_AsString(trace_vec[i]->tb_frame->f_code->co_filename);
-    }
-    if (PyUnicode_Check(trace_vec[i]->tb_frame->f_code->co_name)) {
-      auto encoded = PyUnicode_AsEncodedString(
-          trace_vec[i]->tb_frame->f_code->co_name, "ASCII", "replace");
-      if (encoded != nullptr) {
-        funcname = strdup(PyBytes_AS_STRING(encoded));
-        Py_DECREF(encoded);
-      } else {
-        funcname = "<unknown>";
-      }
-    } else {
-      funcname = PyBytes_AsString(trace_vec[i]->tb_frame->f_code->co_name);
-    }
-
-    LOG(ERROR) << "    # " << trace_vec.size() - i - 1 << "  " << filename
-               << " (" << line << "): " << funcname;
-  }
-  Py_XDECREF(type);
-  Py_XDECREF(value);
-  Py_XDECREF(trace);
-}
-
 PythonOpBase::PythonOpBase(
     const OperatorDef& operator_def,
     Workspace* ws,
@@ -267,10 +222,11 @@ PythonOpBase::PythonOpBase(
       built_func_.reset(new Func{
           built_func, GetSingleArgument<bool>("pass_workspace", false)});
     } catch (const py::error_already_set& e) {
-      LOG(ERROR) << "Python exception encountered while creating PythonOp: "
-                 << e.what() << "\nTraceback: ";
-      printPythonStackTrace();
-      CAFFE_THROW("Python exception encountered while creating PythonOp.");
+      std::stringstream error;
+      error << "Python exception encountered while creating PythonOp: "
+            << e.what();
+      LOG(ERROR) << error.str();
+      CAFFE_THROW(error.str());
     }
   }
 }
@@ -306,10 +262,10 @@ bool PythonOpBase::RunOnDevice() {
         pyFunc->py_func(inputs, outputs);
       }
     } catch (const py::error_already_set& e) {
-      LOG(ERROR) << "Exception encountered running PythonOp function: "
-                 << e.what() << "\nTraceback: ";
-      printPythonStackTrace();
-      return false;
+      std::stringstream error;
+      error << "Exception encountered running PythonOp function: " << e.what();
+      LOG(ERROR) << error.str();
+      CAFFE_THROW(error.str());
     }
   }
   return true;
@@ -764,6 +720,28 @@ void addObjectMethods(py::module& m) {
                   TensorFetcher<CPUContext>().FetchTensor(*t, true).obj);
             }
             return pyout;
+          });
+
+  py::class_<script::CompilationUnit>(m, "CompilationUnit")
+      .def(py::init<>())
+      .def("define", &script::CompilationUnit::define)
+      .def(
+          "create_net",
+          [](script::CompilationUnit* self, const std::string& name) {
+            auto net = self->createNet(gWorkspace, name);
+            CAFFE_ENFORCE(net);
+            return net;
+          })
+      .def(
+          "extern",
+          [](script::CompilationUnit* self,
+             const std::string& name,
+             py::object py_proto) {
+            py::bytes bytes = py_proto.attr("SerializeToString")();
+            std::unique_ptr<caffe2::NetDef> proto(new NetDef());
+            CAFFE_ENFORCE(ParseProtobufFromLargeString(
+                bytes.cast<std::string>(), proto.get()));
+            self->defineExtern(name, std::move(proto));
           });
 }
 
