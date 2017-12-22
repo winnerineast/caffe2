@@ -21,6 +21,12 @@ valid_images=(
 
   # Build for Android
   py2-android-ubuntu16.04
+
+  # Builds for Anaconda
+  py2-conda-ubuntu16.04
+  py2-conda-cuda9.0-cudnn7-ubuntu16.04
+  py3-conda-ubuntu16.04
+  py3-conda-cuda9.0-cudnn7-ubuntu16.04
 )
 
 image="$1"
@@ -32,14 +38,29 @@ if [ -z "${image}" ]; then
 fi
 
 UBUNTU_VERSION="$(echo "${image}" | perl -n -e'/ubuntu(\d+\.\d+)/ && print $1')"
-DOCKERFILE="ubuntu/Dockerfile"
+CENTOS_VERSION="$(echo "${image}" | perl -n -e'/centos(\d+)/ && print $1')"
+
+if [ -n "${UBUNTU_VERSION}" ]; then
+  OS="ubuntu"
+  DOCKERFILE="ubuntu/Dockerfile"
+elif [ -n "${CENTOS_VERSION}" ]; then
+  OS="centos"
+  DOCKERFILE="centos/Dockerfile"
+else
+  echo "Unable to derive operating system base..."
+  exit 1
+fi
 
 PYTHON_VERSION="$(echo "${image}" | perl -n -e'/py(\d+(\.\d+)?)/ && print $1')"
 
 if [[ "$image" == *cuda* ]]; then
   CUDA_VERSION="$(echo "${image}" | perl -n -e'/cuda(\d+\.\d+)/ && print $1')"
   CUDNN_VERSION="$(echo "${image}" | perl -n -e'/cudnn(\d+)/ && print $1')"
-  DOCKERFILE="ubuntu-cuda/Dockerfile"
+  DOCKERFILE="${OS}-cuda/Dockerfile"
+fi
+
+if [[ "$image" == *conda* ]]; then
+  ANACONDA_VERSION=$PYTHON_VERSION
 fi
 
 if [[ "$image" == *-mkl-* ]]; then
@@ -59,7 +80,7 @@ if [[ "$image" == *-clang* ]]; then
 fi
 
 # Copy over common scripts to directory containing the Dockerfile to build
-cp -a bin common/* "$(dirname ${DOCKERFILE})"
+cp -a common/* "$(dirname ${DOCKERFILE})"
 
 # Set Jenkins UID and GID if running Jenkins
 if [ -n "${JENKINS:-}" ]; then
@@ -69,17 +90,20 @@ fi
 
 # Build image
 docker build \
-       --build-arg EC2=${EC2:-} \
-       --build-arg JENKINS=${JENKINS:-} \
-       --build-arg JENKINS_UID=${JENKINS_UID:-} \
-       --build-arg JENKINS_GID=${JENKINS_GID:-} \
-       --build-arg UBUNTU_VERSION=${UBUNTU_VERSION} \
-       --build-arg PYTHON_VERSION=${PYTHON_VERSION} \
-       --build-arg CUDA_VERSION=${CUDA_VERSION} \
-       --build-arg CUDNN_VERSION=${CUDNN_VERSION} \
-       --build-arg MKL=${MKL} \
-       --build-arg ANDROID=${ANDROID} \
-       --build-arg GCC_VERSION=${GCC_VERSION} \
-       --build-arg CLANG_VERSION=${CLANG_VERSION} \
+       --build-arg "BUILD_ENVIRONMENT=${image}" \
+       --build-arg "EC2=${EC2:-}" \
+       --build-arg "JENKINS=${JENKINS:-}" \
+       --build-arg "JENKINS_UID=${JENKINS_UID:-}" \
+       --build-arg "JENKINS_GID=${JENKINS_GID:-}" \
+       --build-arg "UBUNTU_VERSION=${UBUNTU_VERSION}" \
+       --build-arg "CENTOS_VERSION=${CENTOS_VERSION}" \
+       --build-arg "PYTHON_VERSION=${PYTHON_VERSION}" \
+       --build-arg "ANACONDA_VERSION=${ANACONDA_VERSION}" \
+       --build-arg "CUDA_VERSION=${CUDA_VERSION}" \
+       --build-arg "CUDNN_VERSION=${CUDNN_VERSION}" \
+       --build-arg "MKL=${MKL}" \
+       --build-arg "ANDROID=${ANDROID}" \
+       --build-arg "GCC_VERSION=${GCC_VERSION}" \
+       --build-arg "CLANG_VERSION=${CLANG_VERSION}" \
        "$@" \
        "$(dirname ${DOCKERFILE})"

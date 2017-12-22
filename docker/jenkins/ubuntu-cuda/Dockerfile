@@ -17,6 +17,12 @@ ARG PYTHON_VERSION
 ADD ./install_python.sh install_python.sh
 RUN bash ./install_python.sh && rm install_python.sh
 
+# Install Anaconda
+ARG ANACONDA_VERSION
+ADD ./install_anaconda.sh install_anaconda.sh
+RUN if [ -n "${ANACONDA_VERSION}" ]; then bash ./install_anaconda.sh; fi
+RUN rm install_anaconda.sh
+
 # (optional) Add Jenkins user
 ARG JENKINS
 ARG JENKINS_UID
@@ -24,3 +30,7 @@ ARG JENKINS_GID
 ADD ./add_jenkins_user.sh add_jenkins_user.sh
 RUN if [ -n "${JENKINS}" ]; then bash ./add_jenkins_user.sh ${JENKINS_UID} ${JENKINS_GID}; fi
 RUN rm add_jenkins_user.sh
+
+# Include BUILD_ENVIRONMENT environment variable in image
+ARG BUILD_ENVIRONMENT
+ENV BUILD_ENVIRONMENT ${BUILD_ENVIRONMENT}
