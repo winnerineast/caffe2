@@ -127,9 +127,9 @@ class TestPooling(hu.HypothesisTestCase):
             self.assertGradientChecks(gc, op, [X], 0, [0])
 
     @given(stride=st.integers(1, 3),
-           pad=st.integers(0, 3),
-           kernel=st.integers(1, 5),
-           size=st.integers(7, 9),
+           pad=st.integers(0, 2),
+           kernel=st.integers(1, 6),
+           size=st.integers(3, 5),
            input_channels=st.integers(1, 3),
            batch_size=st.integers(1, 3),
            order=st.sampled_from(["NCHW", "NHWC"]),
@@ -140,6 +140,10 @@ class TestPooling(hu.HypothesisTestCase):
     def test_pooling_3d(self, stride, pad, kernel, size, input_channels,
                         batch_size, order, op_type, engine, gc, dc):
         assume(pad < kernel)
+        assume(size + pad + pad >= kernel)
+        # some case here could be calculated with global pooling, but instead
+        # calculated with general implementation, slower but should still
+        # be corect.
         op = core.CreateOperator(
             op_type,
             ["X"],
@@ -155,9 +159,39 @@ class TestPooling(hu.HypothesisTestCase):
         if order == "NCHW":
             X = X.transpose((0, 4, 1, 2, 3))
 
-        self.assertDeviceChecks(dc, op, [X], [0])
+        self.assertDeviceChecks(dc, op, [X], [0], threshold=0.001)
         if 'MaxPool' not in op_type:
-            self.assertGradientChecks(gc, op, [X], 0, [0])
+            self.assertGradientChecks(gc, op, [X], 0, [0], threshold=0.001)
+
+    @given(kernel=st.integers(3, 6),
+           size=st.integers(3, 5),
+           input_channels=st.integers(1, 3),
+           batch_size=st.integers(1, 3),
+           order=st.sampled_from(["NCHW", "NHWC"]),
+           op_type=st.sampled_from(["MaxPool", "AveragePool",
+                                    "MaxPool3D", "AveragePool3D"]),
+           engine=st.sampled_from(["", "CUDNN"]),
+           **hu.gcs)
+    def test_global_pooling_3d(self, kernel, size, input_channels,
+                               batch_size, order, op_type, engine, gc, dc):
+        # pad and stride ignored because they will be infered in global_pooling
+        op = core.CreateOperator(
+            op_type,
+            ["X"],
+            ["Y"],
+            kernels=[kernel] * 3,
+            order=order,
+            global_pooling=True,
+            engine=engine,
+        )
+        X = np.random.rand(
+            batch_size, size, size, size, input_channels).astype(np.float32)
+        if order == "NCHW":
+            X = X.transpose((0, 4, 1, 2, 3))
+
+        self.assertDeviceChecks(dc, op, [X], [0], threshold=0.001)
+        if 'MaxPool' not in op_type:
+            self.assertGradientChecks(gc, op, [X], 0, [0], threshold=0.001)
 
     @unittest.skipIf(not workspace.has_gpu_support, "No GPU support")
     @given(stride=st.integers(1, 3),
@@ -178,6 +212,7 @@ class TestPooling(hu.HypothesisTestCase):
             kernel=kernel,
             pad=pad,
             order="NCHW",
+            deterministic=1,
         )
         X = np.random.rand(
             batch_size, size, size, input_channels).astype(np.float32)
@@ -220,6 +255,8 @@ class TestPooling(hu.HypothesisTestCase):
     def test_global_max_pool_nchw(self, op_type, sz,
                                   batch_size, engine, gc, dc):
         ''' Special test to stress the fast path of NCHW max pool '''
+        # CuDNN 5 does not support deterministic max pooling.
+        assume(workspace.GetCuDNNVersion() >= 6000 or engine != "CUDNN")
         op = core.CreateOperator(
             op_type,
             ["X"],
@@ -229,6 +266,7 @@ class TestPooling(hu.HypothesisTestCase):
             pad=0,
             order="NCHW",
             engine=engine,
+            deterministic=1,
         )
 
         np.random.seed(1234)
@@ -281,6 +319,8 @@ class TestPooling(hu.HypothesisTestCase):
            **hu.gcs)
     def test_global_pooling(self, size, input_channels, batch_size,
                             order, op_type, engine, gc, dc):
+        # CuDNN 5 does not support deterministic max pooling.
+        assume(workspace.GetCuDNNVersion() >= 6000 or op_type != "MaxPool")
         op = core.CreateOperator(
             op_type,
             ["X"],

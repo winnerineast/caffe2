@@ -82,17 +82,31 @@ if(USE_NNPACK)
   endif()
 endif()
 
+# ---[ On Android, Caffe2 uses cpufeatures library in the thread pool
+if (ANDROID)
+  # ---[ Check if cpufeatures was already imported
+  if (NOT TARGET cpufeatures)
+    add_library(cpufeatures STATIC
+      "${ANDROID_NDK}/sources/android/cpufeatures/cpu-features.c")
+    target_include_directories(cpufeatures
+      PUBLIC "${ANDROID_NDK}/sources/android/cpufeatures")
+    target_link_libraries(cpufeatures PRIVATE dl)
+  endif()
+  list(APPEND Caffe2_DEPENDENCY_LIBS $<TARGET_FILE:cpufeatures>)
+  list(APPEND Caffe2_EXTERNAL_DEPENDENCIES cpufeatures)
+  caffe2_include_directories("${ANDROID_NDK}/sources/android/cpufeatures")
+endif()
+
 # ---[ gflags
 if(USE_GFLAGS)
-  find_package(GFlags)
-  if(GFLAGS_FOUND)
+  include(cmake/public/gflags.cmake)
+  if (TARGET gflags)
     set(CAFFE2_USE_GFLAGS 1)
-    caffe2_include_directories(${GFLAGS_INCLUDE_DIRS})
-    list(APPEND Caffe2_DEPENDENCY_LIBS ${GFLAGS_LIBRARIES})
+    list(APPEND Caffe2_DEPENDENCY_LIBS gflags)
   else()
     message(WARNING
-        "gflags is not found. Caffe2 will build without gflags support but it "
-        "is strongly recommended that you install gflags. Suppress this "
+        "gflags is not found. Caffe2 will build without gflags support but "
+        "it is strongly recommended that you install gflags. Suppress this "
         "warning with -DUSE_GFLAGS=OFF")
     set(USE_GFLAGS OFF)
   endif()
@@ -100,11 +114,10 @@ endif()
 
 # ---[ Google-glog
 if(USE_GLOG)
-  find_package(Glog)
-  if(GLOG_FOUND)
+  include(cmake/public/glog.cmake)
+  if (TARGET glog::glog)
     set(CAFFE2_USE_GOOGLE_GLOG 1)
-    caffe2_include_directories(${GLOG_INCLUDE_DIRS})
-    list(APPEND Caffe2_DEPENDENCY_LIBS ${GLOG_LIBRARIES})
+    list(APPEND Caffe2_DEPENDENCY_LIBS glog::glog)
   else()
     message(WARNING
         "glog is not found. Caffe2 will build without glog support but it is "
@@ -113,6 +126,7 @@ if(USE_GLOG)
     set(USE_GLOG OFF)
   endif()
 endif()
+
 
 # ---[ Googletest and benchmark
 if(BUILD_TEST)
@@ -125,6 +139,10 @@ if(BUILD_TEST)
   set(INSTALL_GTEST OFF)
   # We currently don't need gmock right now.
   set(BUILD_GMOCK OFF)
+  # For Windows, we will check the runtime used is correctly passed in.
+  if (NOT CAFFE2_USE_MSVC_STATIC_RUNTIME)
+    set(gtest_force_shared_crt ON)
+  endif()
   add_subdirectory(${PROJECT_SOURCE_DIR}/third_party/googletest)
   caffe2_include_directories(${PROJECT_SOURCE_DIR}/third_party/googletest/googletest/include)
 
@@ -324,39 +342,11 @@ endif()
 
 # ---[ CUDA
 if(USE_CUDA)
-  include(cmake/Cuda.cmake)
-  if(HAVE_CUDA)
-    # CUDA 9.0 requires GCC version <= 6
-    if (CUDA_VERSION VERSION_EQUAL 9.0)
-      if (CMAKE_C_COMPILER_ID STREQUAL "GNU" AND
-          NOT CMAKE_C_COMPILER_VERSION VERSION_LESS 7.0 AND
-          CUDA_HOST_COMPILER STREQUAL CMAKE_C_COMPILER)
-        message(FATAL_ERROR
-          "CUDA 9.0 is not compatible with GCC version >= 7. "
-          "Use the following option to use another version (for example): \n"
-          "  -DCUDA_HOST_COMPILER=/usr/bin/gcc-6\n")
-      endif()
-    # CUDA 8.0 requires GCC version <= 5
-    elseif (CUDA_VERSION VERSION_EQUAL 8.0)
-      if (CMAKE_C_COMPILER_ID STREQUAL "GNU" AND
-          NOT CMAKE_C_COMPILER_VERSION VERSION_LESS 6.0 AND
-          CUDA_HOST_COMPILER STREQUAL CMAKE_C_COMPILER)
-        message(FATAL_ERROR
-          "CUDA 8.0 is not compatible with GCC version >= 6. "
-          "Use the following option to use another version (for example): \n"
-          "  -DCUDA_HOST_COMPILER=/usr/bin/gcc-5\n")
-      endif()
-    endif()
-  endif()
-  # ---[ CUDNN
-  if(HAVE_CUDA)
-    find_package(CuDNN REQUIRED)
-    if(CUDNN_FOUND)
-      caffe2_include_directories(${CUDNN_INCLUDE_DIRS})
-      list(APPEND Caffe2_CUDA_DEPENDENCY_LIBS ${CUDNN_LIBRARIES})
-    endif()
-  else()
-    message(WARNING "Not compiling with CUDA. Suppress this warning with -DUSE_CUDA=OFF")
+  include(cmake/public/cuda.cmake)
+  if(NOT CAFFE2_FOUND_CUDA)
+    message(WARNING
+        "Not compiling with CUDA. Suppress this warning with "
+        "-DUSE_CUDA=OFF.")
     set(USE_CUDA OFF)
   endif()
 endif()
@@ -433,6 +423,16 @@ if(USE_GLOO)
   endif()
 endif()
 
+# ---[ profiling
+if(USE_PROF)
+  find_package(htrace)
+  if(htrace_FOUND)
+    set(USE_PROF_HTRACE ON)
+  else()
+    message(WARNING "htrace not found. Caffe2 will build without htrace prof")
+  endif()
+endif()
+
 if (USE_MOBILE_OPENGL)
   if (ANDROID)
     list(APPEND Caffe2_DEPENDENCY_LIBS EGL GLESv2)
@@ -464,6 +464,11 @@ if (USE_METAL)
   endif()
 endif()
 
+if (USE_NNAPI AND NOT ANDROID)
+  message(WARNING "NNApi is only used in android builds.")
+  set(USE_NNAPI OFF)
+endif()
+
 if (USE_ATEN)
   list(APPEND Caffe2_EXTERNAL_DEPENDENCIES aten_build)
   list(APPEND Caffe2_DEPENDENCY_LIBS ATen)
@@ -476,4 +481,5 @@ if (USE_ZSTD)
   list(APPEND Caffe2_DEPENDENCY_LIBS libzstd_static)
   caffe2_include_directories(${PROJECT_SOURCE_DIR}/third_party/zstd/lib)
   add_subdirectory(${PROJECT_SOURCE_DIR}/third_party/zstd/build/cmake)
+  set_property(TARGET libzstd_static PROPERTY POSITION_INDEPENDENT_CODE ON)
 endif()

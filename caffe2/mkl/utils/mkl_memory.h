@@ -188,8 +188,10 @@ class MKLMemory {
       bool share_mem_if_possible = false) {
     buffer_.reset();
     dims_.resize(dimension);
+    size_ = 1;
     for (int i = 0; i < dimension; ++i) {
       dims_[i] = size[dimension - 1 - i];
+      size_ *= dims_[i];
     }
     user_layout_.Reset(dimension, size, strides);
     if (primitive) {
@@ -219,8 +221,10 @@ class MKLMemory {
       bool share_mem_if_possible = false) {
     buffer_.reset();
     dims_.resize(dims.size());
+    size_ = 1;
     for (int i = 0; i < dims.size(); ++i) {
       dims_[i] = dims[i];
+      size_ *= dims_[i];
     }
     size_t dimension = dims.size();
     vector<size_t> size(dimension);
@@ -247,6 +251,41 @@ class MKLMemory {
     }
   }
 
+  /**
+   * Resizes the tensor without touching underlying storage.
+   * This requires the total size of the tensor to remains constant.
+   */
+  template <typename IndexType>
+  void Reshape(const vector<IndexType>& dims) {
+    CAFFE_ENFORCE(
+        layout_is_user_layout_,
+        "Reshape is not allowed for custom layouts. "
+        "Convert to plain layout before invoking Reshape().");
+
+    TIndex new_size = 1;
+    for (auto i = 0; i < dims.size(); ++i) {
+      CAFFE_ENFORCE_GE_WITH_CALLER(dims[i], 0);
+      new_size *= dims[i];
+    }
+    CAFFE_ENFORCE_WITH_CALLER(
+        new_size == size_,
+        "New size and old size are not equal. Reshape is not possible.");
+
+    vector<TIndex> new_dims(dims.size());
+    vector<size_t> size(dims.size());
+    vector<size_t> strides(dims.size());
+    for (int i = 0; i < dims.size(); ++i) {
+      new_dims[i] = dims[i];
+      size[i] = dims[dims.size() - i - 1];
+      strides[i] = (i == 0) ? 1 : strides[i - 1] * size[i - 1];
+    }
+    dims_ = new_dims;
+    user_layout_.Reset(dims.size(), size.data(), strides.data());
+    layout_.Reset(dims.size(), size.data(), strides.data());
+    convert_in_.Reset(dnnConversionCreate<T>, user_layout_, layout_);
+    convert_out_.Reset(dnnConversionCreate<T>, layout_, user_layout_);
+  }
+
   // Destructs the MKLMemory.
   ~MKLMemory() {}
 
@@ -254,6 +293,8 @@ class MKLMemory {
     if (share_mem_if_possible_ && layout_is_user_layout_) {
       VLOG(2) << "Sharing underlying memory and skip copy.";
       buffer_.reset(const_cast<void*>(ptr), [](void*) -> void {});
+    } else if (size_ == 0) {
+      VLOG(2) << "Cannot copy into empty MKL buffer.";
     } else {
       VLOG(2) << "Copying external content.";
       MKLDNN_SAFE_CALL(dnnConversionExecute<T>(
@@ -270,13 +311,20 @@ class MKLMemory {
   }
 
   void CopyFrom(const MKLMemory<T>& other) {
-    if (share_mem_if_possible_ && dnnLayoutCompare(other.layout_, layout_)) {
+    CAFFE_ENFORCE_EQ(
+        other.dims(),
+        dims_,
+        "Dims does not match the expected dims of the resource.");
+
+    if (share_mem_if_possible_ && dnnLayoutCompare<T>(other.layout_, layout_)) {
       buffer_ = other.buffer_;
+    } else if (size_ == 0) {
+      VLOG(2) << "Cannot copy between empty MKL buffers";
     } else {
       PrimitiveWrapper<T> convert(
           dnnConversionCreate<T>, other.layout_, layout_);
       MKLDNN_SAFE_CALL(
-          dnnConversionExecute<T>(convert, other.buffer_, buffer()));
+          dnnConversionExecute<T>(convert, other.buffer(), buffer()));
     }
   }
 
@@ -343,7 +391,7 @@ class MKLMemory {
       MKLMemory<T>* other,
       const dnnPrimitive_t primitive = nullptr,
       const dnnResourceType_t type = dnnResourceNumber) {
-    if (buffer_.get() == other->buffer_.get()) {
+    if (buffer_ && buffer_.get() == other->buffer_.get()) {
       CAFFE_ENFORCE(
           dnnLayoutCompare<T>(other->layout_, layout_),
           "MKLMemory layout does not match, despite in-place buffers");
@@ -355,8 +403,6 @@ class MKLMemory {
       // This is already mapping to the same memory region. Skip copy.
       return;
     }
-    CAFFE_ENFORCE(
-        buffer_.get(), "Canot copy out from an uninitialized MKLMemory.");
     // TODO(jiayq): if primitive creation is a big overhead and we will be
     // consistently copying stuff with fixed src and dst layouts, consider
     // making a cache for the primitive below.
@@ -364,6 +410,12 @@ class MKLMemory {
     if (dims() != other->dims()) {
       other->Reset(dims(), primitive, type);
     }
+    if (size_ == 0) {
+      VLOG(2) << "Cannot copy between empty MKL buffers.";
+      return;
+    }
+    CAFFE_ENFORCE(
+        buffer_.get(), "Cannot copy out from an uninitialized MKLMemory.");
     PrimitiveWrapper<T> convert(
         dnnConversionCreate<T>, layout_, other->layout_);
     MKLDNN_SAFE_CALL(
@@ -374,6 +426,10 @@ class MKLMemory {
     if (buffer_ == nullptr) {
       CAFFE_ENFORCE(
           layout_ != nullptr, "Trying to allocate buffer but layout is empty.");
+      if (size_ == 0) {
+        VLOG(2) << "Cannot allocate empty MKL buffer.";
+        return buffer_.get();
+      }
       void* allocated = nullptr;
       MKLDNN_SAFE_CALL(dnnAllocateBuffer<T>(&allocated, layout_));
       buffer_.reset(allocated, [](void* ptr) -> void {
@@ -404,6 +460,13 @@ class MKLMemory {
   }
 
   /**
+   * Returns the size (i.e., the number of items) in the buffer.
+   */
+  inline TIndex size() const {
+    return size_;
+  }
+
+  /**
    * Returns the i-th dimension of the tensor. Note that the passed in index
    * must be between 0 (inclusive) and the number of dimensions, otherwise
    * this function will produce a fatal message.
@@ -416,13 +479,17 @@ class MKLMemory {
     return layout_;
   }
 
+  inline bool is_user_layout() const {
+    return layout_is_user_layout_;
+  }
+
   // Returns a view of the content. We mark this function const, but be noted
   // that the returned std::shared_ptr is not const protected - user discretion
   // is recommended for correctness.
   std::shared_ptr<void> View(
       dnnLayout_t layout_wanted,
-      dnnPrimitive_t primitive,
-      dnnResourceType_t type) const {
+      dnnPrimitive_t primitive = nullptr,
+      dnnResourceType_t type = dnnResourceNumber) const {
     std::lock_guard<std::mutex> lock(buffer_lock_);
     if (dnnLayoutCompare<T>(layout_wanted, layout_)) {
       // If they are the same, return the original content.
@@ -436,7 +503,7 @@ class MKLMemory {
           dnnConversionCreate<T>, layout_, layout_wanted);
       MKLDNN_SAFE_CALL(dnnConversionExecute<T>(
           convert, buffer_.get(), temp_buffer));
-      if (FLAGS_caffe2_mkl_implicit_layout_change) {
+      if (primitive && FLAGS_caffe2_mkl_implicit_layout_change) {
         VLOG(2) << "Implicit layout change set. "
                    "Changing the underlying storage.";
         // We will need to call Reset to set up all the member variables.
@@ -471,6 +538,8 @@ class MKLMemory {
   // The dimensions in the same order as Caffe2 does. This is used to
   // interface with C2.
   vector<TIndex> dims_;
+  // Number of items in the buffer.
+  TIndex size_ = -1;
   // The user dnn layout.
   LayoutWrapper<T> user_layout_;
   // The internal dnn layout.

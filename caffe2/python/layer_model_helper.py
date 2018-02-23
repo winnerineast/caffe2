@@ -21,10 +21,14 @@ from __future__ import print_function
 from __future__ import unicode_literals
 
 from caffe2.python import core, model_helper, schema, scope
+from caffe2.python.modeling.parameter_info import (
+    ParameterInfo,
+)
 from caffe2.python.modeling.parameter_sharing import (
     parameter_sharing_context,
 )
 from caffe2.python.optimizer import get_param_device
+from caffe2.python.regularizer import Regularizer
 from caffe2.python.layers import layers
 from caffe2.proto import caffe2_pb2
 from future.utils import viewitems, viewvalues
@@ -58,12 +62,21 @@ class LayerModelHelper(model_helper.ModelHelper):
         self._layers = []
         self._param_to_shape = {}
 
+        # seed default
+        self._seed = None
+        self._sequence_seed = True
+
         # optimizer bookkeeping
         self.param_to_optim = {}
+        self.param_to_reg = {}
 
         self._default_optimizer = None
         self._loss = None
         self._output_schema = None
+
+        # breakdown map; breakdown features are categorical (like dense) but not
+        # necessarily used to represent data for training
+        self._breakdown_map = None
 
         # Connect Schema to self.net. That particular instance of schmea will be
         # use for generation of the Layers accross the network and would be used
@@ -137,6 +150,8 @@ class LayerModelHelper(model_helper.ModelHelper):
     def add_global_constant(
         self, name, array=None, dtype=None, initializer=None
     ):
+        assert isinstance(name, six.string_types), (
+            'name should be a string as we are using it as map key')
         # This is global namescope for constants. They will be created in all
         # init_nets and there should be very few of them.
         assert name not in self.global_constants, \
@@ -198,12 +213,13 @@ class LayerModelHelper(model_helper.ModelHelper):
         if shape != ref_shape:
             raise ValueError(
                 "Got inconsistent shapes between shared parameters "
-                "when trying to map a blob in scope {0} to {1}.".format(
-                    scope.CurrentNameScope(), param_name)
+                "when trying to map a blob in scope {0} to {1}. ref_shape : "
+                " {2}, shape : {3}".format(
+                    scope.CurrentNameScope(), param_name, ref_shape, shape)
             )
 
     def create_param(self, param_name, shape, initializer, optimizer=None,
-                     ps_param=None):
+                     ps_param=None, regularizer=None):
         if isinstance(param_name, core.BlobReference):
             param_name = str(param_name)
         elif isinstance(param_name, six.string_types):
@@ -239,6 +255,7 @@ class LayerModelHelper(model_helper.ModelHelper):
             initializer=initializer_op,
             optimizer=optimizer,
             ps_param=ps_param,
+            regularizer=regularizer
         )
 
         self._validate_param_shape(param_name, shape)
@@ -267,6 +284,21 @@ class LayerModelHelper(model_helper.ModelHelper):
                 param.optimizer or self.default_optimizer
 
             self.params.append(param.parameter)
+            if isinstance(param, layers.LayerParameter):
+                self.param_to_reg[param.parameter] = param.regularizer
+            elif isinstance(param, ParameterInfo):
+                # TODO:
+                # Currently, LSTM and RNNcells, which use ModelHelper instead of
+                # LayerModelHelper as super class, are called in pooling_methods
+                # In ModelHelper, regularization is not supported in create_param
+                # We will unify the way of create_param of ModelHelper and
+                # LayerModelHelper in the future.
+                logger.info('regularization is unsupported for ParameterInfo object')
+            else:
+                raise ValueError(
+                    'unknown object type besides ParameterInfo and LayerParameter: {}'
+                    .format(param)
+                )
 
         # The primary value of adding everything to self.net - generation of the
         # operators right away, i.e. if error happens it'll be detected
@@ -281,6 +313,20 @@ class LayerModelHelper(model_helper.ModelHelper):
                 param_blobs.append(param.parameter)
 
         return param_blobs
+
+    @property
+    def seed(self):
+        return self._seed
+
+    def store_seed(self, seed, sequence_seed=True):
+        # Store seed config that will be applied to each op in the net.
+        self._seed = seed
+        # If sequence_seed is True, the i-th op has rand_seed=`seed + i`
+        self._sequence_seed = sequence_seed
+
+    def apply_seed(self, net):
+        if self._seed:
+            net.set_rand_seed(self._seed, self._sequence_seed)
 
     @property
     def default_optimizer(self):
@@ -329,6 +375,9 @@ class LayerModelHelper(model_helper.ModelHelper):
         assert self._loss is None
         self._loss = loss
 
+    def has_loss(self):
+        return self._loss is not None
+
     def add_loss(self, loss, name='unnamed'):
         assert loss is not None, "Added loss should not be None"
         assert isinstance(loss, schema.Scalar) or isinstance(
@@ -346,6 +395,10 @@ class LayerModelHelper(model_helper.ModelHelper):
             loss_struct = schema.Struct((prefix, loss))
             self._loss = self._loss + loss_struct
 
+    def add_trainer_extra_schema(self, trainer_extra_schema):
+        trainer_extra_record = schema.NewRecord(self.net, trainer_extra_schema)
+        self._trainer_extra_schema += trainer_extra_record
+
     def __getattr__(self, layer):
         if layer.startswith('__'):
             raise AttributeError(layer)
@@ -353,8 +406,12 @@ class LayerModelHelper(model_helper.ModelHelper):
         # TODO(amalevich): Add add support for ifbpy inline documentation
         if layers.layer_exists(layer):
             def wrapper(*args, **kwargs):
-                return self.add_layer(
-                    layers.create_layer(layer, self, *args, **kwargs))
+                new_layer = layers.create_layer(layer, self, *args, **kwargs)
+                if kwargs.get("output_to_metrics", False):
+                    new_layer.export_output_for_metrics()
+                if kwargs.get("params_to_metrics", False):
+                    new_layer.export_params_for_metrics()
+                return self.add_layer(new_layer)
             return wrapper
         elif core.IsOperator(layer):
             def wrapper(*args, **kwargs):
@@ -367,10 +424,19 @@ class LayerModelHelper(model_helper.ModelHelper):
 
                 if 'name' not in kwargs:
                     kwargs['name'] = layer
-                return self.add_layer(
-                    layers.create_layer('Functional',
-                                        self, *args, function=apply_operator,
-                                        **kwargs))
+
+                new_layer = layers.create_layer(
+                    'Functional',
+                    self, *args, function=apply_operator,
+                    **kwargs
+                )
+
+                if kwargs.get("output_to_metrics", False):
+                    new_layer.export_output_for_metrics()
+                if kwargs.get("params_to_metrics", False):
+                    new_layer.export_params_for_metrics()
+
+                return self.add_layer(new_layer)
             return wrapper
         else:
             raise ValueError(
@@ -379,6 +445,36 @@ class LayerModelHelper(model_helper.ModelHelper):
     @property
     def layers(self):
         return self._layers
+
+    def apply_regularizers_on_loss(
+        self,
+        train_net,
+        train_init_net,
+        blob_to_device=None,
+    ):
+        for param, regularizer in viewitems(self.param_to_reg):
+            if regularizer is None or regularizer.apply_after_optimizer:
+                continue
+            assert isinstance(regularizer, Regularizer)
+            added_loss_blob = regularizer(train_net, train_init_net, param)
+            self.add_loss(
+                schema.Scalar(blob=added_loss_blob),
+                str(added_loss_blob)
+            )
+
+    def apply_regularizers_after_optimizer(
+        self,
+        train_net,
+        train_init_net,
+        grad_map,
+        blob_to_device=None,
+    ):
+        for param, regularizer in viewitems(self.param_to_reg):
+            if regularizer is None or not regularizer.apply_after_optimizer:
+                continue
+            assert isinstance(regularizer, Regularizer)
+            regularizer(
+                train_net, train_init_net, param, grad_map.get(str(param)))
 
     def apply_optimizers(
         self,
@@ -411,3 +507,16 @@ class LayerModelHelper(model_helper.ModelHelper):
     # An optimizer which allows us to do NO optimization
     def NoOptim(self, *args, **kwargs):
         pass
+
+    @property
+    def breakdown_map(self):
+        return self._breakdown_map
+
+    @breakdown_map.setter
+    def breakdown_map(self, breakdown_map):
+        # TODO(xlwang): provide more rich feature information in breakdown_map;
+        # and change the assertion accordingly
+        assert isinstance(breakdown_map, dict)
+        assert all(isinstance(k, six.string_types) for k in breakdown_map)
+        assert sorted(list(breakdown_map.values())) == range(len(breakdown_map))
+        self._breakdown_map = breakdown_map

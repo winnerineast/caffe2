@@ -180,7 +180,7 @@ function(caffe_add_whole_archive_flag lib output_var)
     set(${output_var} -WHOLEARCHIVE:$<TARGET_FILE:${lib}> PARENT_SCOPE)
   else()
     # Assume everything else is like gcc
-    set(${output_var} -Wl,--whole-archive ${lib} -Wl,--no-whole-archive PARENT_SCOPE)
+    set(${output_var} -Wl,--whole-archive $<TARGET_FILE:${lib}> -Wl,--no-whole-archive PARENT_SCOPE)
   endif()
 endfunction()
 
@@ -244,7 +244,11 @@ function(caffe2_binary_target target_name_or_src)
   endif()
   add_executable(${__target} ${__srcs})
   add_dependencies(${__target} ${Caffe2_MAIN_LIBS_ORDER})
-  target_link_libraries(${__target} ${Caffe2_MAIN_LIBS} ${Caffe2_DEPENDENCY_LIBS})
+  if (USE_CUDA)
+    target_link_libraries(${__target} ${Caffe2_MAIN_LIBS} ${Caffe2_DEPENDENCY_LIBS} ${Caffe2_CUDA_DEPENDENCY_LIBS})
+  else()
+    target_link_libraries(${__target} ${Caffe2_MAIN_LIBS} ${Caffe2_DEPENDENCY_LIBS})
+  endif()
   install(TARGETS ${__target} DESTINATION bin)
 endfunction()
 
@@ -254,8 +258,10 @@ endfunction()
 # Anaconda distributions typically contain a lot of packages and some
 # of those can conflict with headers/libraries that must be sourced
 # from elsewhere. This helper ensures that Anaconda paths are always
-# added AFTER other include paths, such that it does not accidentally
-# takes precedence when it shouldn't.
+# added BEFORE other include paths. This prevents a common case where
+# libraries and binaries are linked from Anaconda but headers are
+# included from system packages, since system include directories come
+# before Anaconda include directories by default. 
 #
 # This is just a heuristic and does not have any guarantees. We can
 # add other corner cases here (as long as they are generic enough).
@@ -264,10 +270,97 @@ endfunction()
 #
 function(caffe2_include_directories)
   foreach(path IN LISTS ARGN)
-    if (${path} MATCHES "/anaconda")
-      include_directories(AFTER SYSTEM ${path})
+    if (${DEPRIORITIZE_ANACONDA})
+      # When not preferring anaconda, always search system header files before
+      # anaconda include directories
+      if (${path} MATCHES "/anaconda")
+        include_directories(AFTER ${path})
+      else()
+        include_directories(BEFORE ${path})
+      endif()
     else()
-      include_directories(BEFORE SYSTEM ${path})
+      # When prefering Anaconda, always search anaconda for header files before
+      # system include directories
+      if (${path} MATCHES "/anaconda")
+        include_directories(BEFORE ${path})
+      else()
+        include_directories(AFTER ${path})
+      endif()
     endif()
   endforeach()
+endfunction()
+
+
+###
+# Removes common indentation from a block of text to produce code suitable for
+# setting to `python -c`, or using with pycmd. This allows multiline code to be
+# nested nicely in the surrounding code structure.
+#
+# This function respsects PYTHON_EXECUTABLE if it defined, otherwise it uses
+# `python` and hopes for the best. An error will be thrown if it is not found.
+#
+# Args:
+#     outvar : variable that will hold the stdout of the python command
+#     text   : text to remove indentation from
+#
+function(dedent outvar text)
+  # Use PYTHON_EXECUTABLE if it is defined, otherwise default to python
+  if ("${PYTHON_EXECUTABLE}" STREQUAL "")
+    set(_python_exe "python")
+  else()
+    set(_python_exe "${PYTHON_EXECUTABLE}")
+  endif()
+  set(_fixup_cmd "import sys; from textwrap import dedent; print(dedent(sys.stdin.read()))")
+  # Use echo to pipe the text to python's stdinput. This prevents us from
+  # needing to worry about any sort of special escaping.
+  execute_process(
+    COMMAND echo "${text}"
+    COMMAND "${_python_exe}" -c "${_fixup_cmd}"
+    RESULT_VARIABLE _dedent_exitcode
+    OUTPUT_VARIABLE _dedent_text)
+  if(NOT ${_dedent_exitcode} EQUAL 0)
+    message(ERROR " Failed to remove indentation from: \n\"\"\"\n${text}\n\"\"\"
+    Python dedent failed with error code: ${_dedent_exitcode}")
+    message(FATAL_ERROR " Python dedent failed with error code: ${_dedent_exitcode}")
+  endif()
+  # Remove supurflous newlines (artifacts of print)
+  string(STRIP "${_dedent_text}" _dedent_text)
+  set(${outvar} "${_dedent_text}" PARENT_SCOPE)
+endfunction()
+
+
+###
+# Helper function to run `python -c "<cmd>"` and capture the results of stdout
+#
+# Runs a python command and populates an outvar with the result of stdout.
+# Common indentation in the text of `cmd` is removed before the command is
+# executed, so the caller does not need to worry about indentation issues.
+#
+# This function respsects PYTHON_EXECUTABLE if it defined, otherwise it uses
+# `python` and hopes for the best. An error will be thrown if it is not found.
+#
+# Args:
+#     outvar : variable that will hold the stdout of the python command
+#     cmd    : text representing a (possibly multiline) block of python code
+#
+function(pycmd outvar cmd)
+  dedent(_dedent_cmd "${cmd}")
+  # Use PYTHON_EXECUTABLE if it is defined, otherwise default to python
+  if ("${PYTHON_EXECUTABLE}" STREQUAL "")
+    set(_python_exe "python")
+  else()
+    set(_python_exe "${PYTHON_EXECUTABLE}")
+  endif()
+  # run the actual command
+  execute_process(
+    COMMAND "${_python_exe}" -c "${_dedent_cmd}"
+    RESULT_VARIABLE _exitcode
+    OUTPUT_VARIABLE _output)
+  if(NOT ${_exitcode} EQUAL 0)
+    message(ERROR " Failed when running python code: \"\"\"\n${_dedent_cmd}\n\"\"\"")
+    message(FATAL_ERROR " Python command failed with error code: ${_exitcode}")
+  endif()
+  # Remove supurflous newlines (artifacts of print)
+  string(STRIP "${_output}" _output)
+  set(${outvar} "${_output}" PARENT_SCOPE)
 endfunction()

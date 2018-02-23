@@ -1,4 +1,5 @@
 include(CheckCXXSourceCompiles)
+include(CheckCXXCompilerFlag)
 include(CMakePushCheckState)
 
 # ---[ If running on Ubuntu, check system version and compiler version.
@@ -106,19 +107,56 @@ cmake_pop_check_state()
 # "THIRD_PARTY_NAME related"
 if (${CMAKE_CXX_COMPILER_ID} STREQUAL "MSVC")
   add_compile_options(
-      /wd4018 # (3): Signed/unsigned mismatch
-      /wd4065 # (3): switch with default but no case. Protobuf related.
-      /wd4244 # (2/3/4): Possible loss of precision
-      /wd4267 # (3): Conversion of size_t to smaller type. Possible loss of data.
-      /wd4503 # (1): decorated name length exceeded, name was truncated. Eigen related.
+      ##########################################
+      # Protobuf related. Cannot remove.
+      # This is directly copied from
+      #     https://github.com/google/protobuf/blob/master/cmake/README.md
+      ##########################################
+      /wd4018 # 'expression' : signed/unsigned mismatch
+      /wd4065 # (3): switch with default but no case.
+      /wd4146 # unary minus operator applied to unsigned type, result still unsigned
+      /wd4244 # Conversion from 'type1' to 'type2', possible loss of data.
+      /wd4251 # 'identifier' : class 'type' needs to have dll-interface to be used by clients of class 'type2'
+      /wd4267 # Conversion from 'size_t' to 'type', possible loss of data.
+      /wd4305 # 'identifier' : truncation from 'type1' to 'type2'
+      /wd4355 # 'this' : used in base member initializer list
       /wd4506 # (1): no definition for inline function. Protobuf related.
-      /wd4554 # (3)： check operator precedence for possible error. Eigen related.
-      /wd4800 # (3): Forcing non-boolean value to true or false.
-      /wd4996 # (3): Use of a deprecated member
+      /wd4661 # No suitable definition provided for explicit template instantiation request
+      /wd4800 # 'type' : forcing value to bool 'true' or 'false' (performance warning)
+      /wd4996 # 'function': was declared deprecated
+      ##########################################
+      # Third party related. Cannot remove.
+      ##########################################
+      /wd4141 # (1): inline used twice. google benchmark related.
+      /wd4503 # (1): decorated name length exceeded, name was truncated.
+              #      Eigen related.
+      /wd4554 # (3): check operator precedence for possible error.
+              # Eigen related.
+      /wd4805 # (1): Unsafe mix of types in gtest/gtest.h. Gtest related.
+      ##########################################
+      # These are directly Caffe2 related. However, several are covered by
+      # protobuf now. We leave them here for documentation purposes only.
+      ##########################################
+      #/wd4018 # (3): Signed/unsigned mismatch. We've used it in many places
+      #        #      of the code and it would be hard to correct all.
+      #/wd4244 # (2/3/4): Possible loss of precision. Various cases where we
+      #        #      implicitly cast TIndex to int etc. Need cleaning.
+      #/wd4267 # (3): Conversion of size_t to smaller type. Same as 4244.
+      #/wd4996 # (3): Use of deprecated POSIX functions. Since we develop
+      #        #      mainly on Linux, this is ignored.
+      /wd4273 # (1): inconsistent dll linkage. This is related to the 
+              #      caffe2 FLAGS_* definition using dllimport in header and
+              #      dllexport in cc file. The strategy is copied from gflags.
   )
+  
   # Exception handing for compiler warining C4530, see
   # https://msdn.microsoft.com/en-us/library/2axwkyt4.aspx
   add_definitions("/EHsc")
+
+  set(CMAKE_SHARED_LINKER_FLAGS
+      "${CMAKE_SHARED_LINKER_FLAGS} /ignore:4049 /ignore:4217")
+  set(CMAKE_EXE_LINKER_FLAGS
+      "${CMAKE_EXE_LINKER_FLAGS} /ignore:4049 /ignore:4217")
 endif()
 
 # ---[ If we are building on ios, or building with opengl support, we will
@@ -148,3 +186,27 @@ endif()
 
 # ---[ Create CAFFE2_BUILD_SHARED_LIBS for macros.h.in usage.
 set(CAFFE2_BUILD_SHARED_LIBS ${BUILD_SHARED_LIBS})
+
+# ---[ Check if we will need to include the local Modules_CUDA_fix folder.
+# Add your conditions here if needed.
+if (MSVC)
+  # We know that VS2017 needs the new FindCUDA functionality, so we will
+  # simply enable it for the whole Windows build.
+  set(CAFFE2_CMAKE_USE_LOCAL_FINDCUDA ON)
+endif()
+
+if (${CAFFE2_CMAKE_USE_LOCAL_FINDCUDA})
+  list(APPEND CMAKE_MODULE_PATH ${PROJECT_SOURCE_DIR}/cmake/Modules_CUDA_fix)
+endif()
+
+if (USE_NATIVE_ARCH)
+  check_cxx_compiler_flag("-march=native" COMPILER_SUPPORTS_MARCH_NATIVE)
+  if (COMPILER_SUPPORTS_MARCH_NATIVE)
+    add_definitions("-march=native")
+  else()
+    message(
+        WARNING
+        "Your compiler does not support -march=native. Turn off this warning "
+        "by setting -DUSE_NATIVE_ARCH=OFF.")
+  endif()
+endif()
