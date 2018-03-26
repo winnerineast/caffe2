@@ -23,6 +23,7 @@
 #include "caffe2/core/operator.h"
 #include "caffe2/operators/conv_op_shared.h"
 #include "caffe2/operators/conv_pool_op_base.h"
+#include "caffe2/operators/locally_connected_op_util.h"
 
 namespace caffe2 {
 
@@ -46,21 +47,8 @@ class LocallyConnectedOp final : public ConvPoolOpBase<Context> {
   bool RunOnDeviceWithOrderNHWC() override;
 
  private:
-  struct ShapeParams {
-    int N;
-    int C;
-    int M;
-    int input_image_size;
-    int output_image_size;
-    int kernel_dim;
-    std::vector<int> input_image_dims;
-    std::vector<int> column_dims;
-    std::vector<int> column_transposed_dims;
-    std::vector<int> Y_transposed_dims;
-  };
-
   void RunOnDeviceWithOrderNCHWImpl(
-      const ShapeParams& shape,
+      const lc_op_util::ShapeParams& shape,
       const T* X_data,
       const T* filter_data,
       const T* bias_data,
@@ -70,7 +58,7 @@ class LocallyConnectedOp final : public ConvPoolOpBase<Context> {
       Tensor<Context>* output_buffer);
 
   void RunOnDeviceWithOrderNHWCImpl(
-      const ShapeParams& shape,
+      const lc_op_util::ShapeParams& shape,
       const T* X_data,
       const T* filter_data,
       const T* bias_data,
@@ -82,13 +70,15 @@ class LocallyConnectedOp final : public ConvPoolOpBase<Context> {
   void SetColumnBufferShape(
       const int N,
       const int C,
-      const int kernel_dim,
-      const std::vector<int>& output_image_dims,
+      const int kernel_size,
+      const int output_image_size,
       std::vector<int>* column_dims,
       std::vector<int>* column_transposed_dims);
 
   void SetYTranposedBufferShape(
-      const std::vector<int>& Y_dims,
+      const int N,
+      const int M,
+      const int output_image_size,
       std::vector<int>* Y_transposed_dims);
 
   Tensor<Context> bias_multiplier_;
@@ -99,7 +89,7 @@ class LocallyConnectedOp final : public ConvPoolOpBase<Context> {
   Tensor<Context> Y_transposed_buffer_;
 
   // Dims devices.
-  Tensor<Context> input_dims_device_;
+  Tensor<Context> X_dims_device_;
   Tensor<Context> column_dims_device_;
   Tensor<Context> column_transposed_dims_device_;
   Tensor<Context> column_axes_device_;
@@ -134,21 +124,8 @@ class LocallyConnectedGradientOp final : public ConvPoolOpBase<Context> {
   bool RunOnDeviceWithOrderNHWC() override;
 
  private:
-  struct ShapeParams {
-    int N;
-    int C;
-    int M;
-    int input_image_size;
-    int output_image_size;
-    int kernel_dim;
-    std::vector<int> input_image_dims;
-    std::vector<int> column_dims;
-    std::vector<int> column_transposed_dims;
-    std::vector<int> dY_transposed_dims;
-  };
-
   void RunOnDeviceWithOrderNCHWImpl(
-      const ShapeParams& shape,
+      const lc_op_util::ShapeParams& shape,
       const T* X_data,
       const T* filter_data,
       const T* dY_data,
@@ -160,7 +137,7 @@ class LocallyConnectedGradientOp final : public ConvPoolOpBase<Context> {
       Tensor<Context>* dY_transposed_buffer);
 
   void RunOnDeviceWithOrderNHWCImpl(
-      const ShapeParams& shape,
+      const lc_op_util::ShapeParams& shape,
       const T* X_data,
       const T* filter_data,
       const T* dY_data,
@@ -174,16 +151,18 @@ class LocallyConnectedGradientOp final : public ConvPoolOpBase<Context> {
   void SetColumnBufferShape(
       const int N,
       const int C,
-      const int kernel_dim,
-      const std::vector<int>& output_image_dims,
+      const int kernel_size,
+      const int output_image_size,
       std::vector<int>* column_dims,
       std::vector<int>* column_transposed_dims);
 
   void SetDYTranposedBufferShape(
-      const std::vector<int>& dY_dims,
+      const int N,
+      const int M,
+      const int output_image_size,
       std::vector<int>* dY_transposed_dims);
 
-  bool no_bias_;
+  const bool no_bias_;
 
   Tensor<Context> bias_multiplier_;
 
@@ -193,7 +172,7 @@ class LocallyConnectedGradientOp final : public ConvPoolOpBase<Context> {
   Tensor<Context> dY_transposed_buffer_;
 
   // Dims devices.
-  Tensor<Context> input_dims_device_;
+  Tensor<Context> X_dims_device_;
   Tensor<Context> column_dims_device_;
   Tensor<Context> column_transposed_dims_device_;
   Tensor<Context> column_axes_device_;

@@ -179,7 +179,7 @@ namespace {
 OpSchema::Cost CostInferenceForSpatialBN(
     const OperatorDef& def,
     const vector<TensorShape>& in) {
-  struct OpSchema::Cost cost = PointwiseCostInference<2>(def, in);
+  struct OpSchema::Cost cost = PointwiseCostInference<4>(def, in);
   ArgumentHelper helper(def);
   auto order =
       StringToStorageOrder(helper.GetSingleArgument<string>("order", "NCHW"));
@@ -308,6 +308,7 @@ Output case #2:
         4,
         "saved_var",
         "Saved variance used during training to speed up "
-        "gradient computation. Should not be used for testing.");
+        "gradient computation. Should not be used for testing.")
+    .InheritOnnxSchema("BatchNormalization");
 
 } // namespace caffe2

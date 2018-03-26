@@ -1,3 +1,4 @@
+include(CheckCCompilerFlag)
 include(CheckCXXSourceCompiles)
 include(CheckCXXCompilerFlag)
 include(CMakePushCheckState)
@@ -48,6 +49,47 @@ if (CAFFE2_LONG_IS_INT32_OR_64)
 else()
   message(STATUS "Need to define long as a separate typeid.")
   set(CAFFE2_UNIQUE_LONG_TYPEMETA 1)
+endif()
+cmake_pop_check_state()
+
+# ---[ Check if std::exception_ptr is supported.
+cmake_push_check_state(RESET)
+set(CMAKE_REQUIRED_FLAGS "-std=c++11")
+CHECK_CXX_SOURCE_COMPILES(
+    "#include <string>
+    #include <exception>
+    int main(int argc, char** argv) {
+      std::exception_ptr eptr;
+      try {
+          std::string().at(1);
+      } catch(...) {
+          eptr = std::current_exception();
+      }
+    }" CAFFE2_EXCEPTION_PTR_SUPPORTED)
+
+if (CAFFE2_EXCEPTION_PTR_SUPPORTED)
+  message(STATUS "std::exception_ptr is supported.")
+  set(CAFFE2_USE_EXCEPTION_PTR 1)
+else()
+  message(STATUS "std::exception_ptr is NOT supported.")
+endif()
+cmake_pop_check_state()
+
+# ---[ Check for NUMA support
+cmake_push_check_state(RESET)
+set(CMAKE_REQUIRED_FLAGS "-std=c++11")
+CHECK_CXX_SOURCE_COMPILES(
+    "#include <numa.h>
+    #include <numaif.h>
+
+    int main(int argc, char** argv) {
+    }" CAFFE2_IS_NUMA_AVAILABLE)
+
+if (CAFFE2_IS_NUMA_AVAILABLE)
+  message(STATUS "NUMA is available")
+else()
+  message(STATUS "NUMA is not available")
+  set(CAFFE2_DISABLE_NUMA 1)
 endif()
 cmake_pop_check_state()
 
@@ -144,11 +186,11 @@ if (${CMAKE_CXX_COMPILER_ID} STREQUAL "MSVC")
       #/wd4267 # (3): Conversion of size_t to smaller type. Same as 4244.
       #/wd4996 # (3): Use of deprecated POSIX functions. Since we develop
       #        #      mainly on Linux, this is ignored.
-      /wd4273 # (1): inconsistent dll linkage. This is related to the 
+      /wd4273 # (1): inconsistent dll linkage. This is related to the
               #      caffe2 FLAGS_* definition using dllimport in header and
               #      dllexport in cc file. The strategy is copied from gflags.
   )
-  
+
   # Exception handing for compiler warining C4530, see
   # https://msdn.microsoft.com/en-us/library/2axwkyt4.aspx
   add_definitions("/EHsc")
@@ -170,6 +212,23 @@ endif()
 if (IOS)
   add_definitions("-mfpu=neon-fp16")
   add_definitions("-Wno-deprecated-declarations")
+endif()
+
+# ---[ If we are building with ACL, we will enable neon-fp16.
+if(USE_ACL)
+  if (CMAKE_SYSTEM_PROCESSOR MATCHES "^armv")
+    # 32-bit ARM (armv7, armv7-a, armv7l, etc)
+    set(ACL_ARCH "armv7a")
+    # Compilers for 32-bit ARM need extra flags to enable NEON-FP16
+    add_definitions("-mfpu=neon-fp16")
+
+    include(CheckCCompilerFlag)
+    CHECK_C_COMPILER_FLAG(
+        -mfp16-format=ieee CAFFE2_COMPILER_SUPPORTS_FP16_FORMAT)
+    if (CAFFE2_COMPILER_SUPPORTS_FP16_FORMAT)
+      add_definitions("-mfp16-format=ieee")
+    endif()
+  endif()
 endif()
 
 # ---[ If we use asan, turn on the flags.

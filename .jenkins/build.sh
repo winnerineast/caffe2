@@ -40,10 +40,26 @@ if [ -z "${SCCACHE}" ] && which ccache > /dev/null; then
   export PATH="$CCACHE_WRAPPER_DIR:$PATH"
 fi
 
+CMAKE_ARGS=("-DBUILD_BINARY=ON")
+CMAKE_ARGS+=("-DUSE_OBSERVERS=ON")
+CMAKE_ARGS+=("-DUSE_ZSTD=ON")
+
 # Run build script from scripts if applicable
 if [[ "${BUILD_ENVIRONMENT}" == *-android* ]]; then
   export ANDROID_NDK=/opt/ndk
-  "${ROOT_DIR}/scripts/build_android.sh" "$@"
+  "${ROOT_DIR}/scripts/build_android.sh" ${CMAKE_ARGS[*]} "$@"
+  exit 0
+fi
+if [[ "${BUILD_ENVIRONMENT}" == conda* ]]; then
+
+  # click (required by onnx) wants these set
+  export LANG=C.UTF-8
+  export LC_ALL=C.UTF-8
+
+  # SKIP_CONDA_TESTS refers to only the 'test' section of the meta.yaml
+  export SKIP_CONDA_TESTS=1
+  export CONDA_INSTALL_LOCALLY=1
+  "${ROOT_DIR}/scripts/build_anaconda.sh" "$@"
   exit 0
 fi
 
@@ -52,7 +68,7 @@ mkdir -p ./build
 cd ./build
 
 INSTALL_PREFIX="/usr/local/caffe2"
-CMAKE_ARGS=("-DCMAKE_INSTALL_PREFIX=${INSTALL_PREFIX}")
+CMAKE_ARGS+=("-DCMAKE_INSTALL_PREFIX=${INSTALL_PREFIX}")
 
 # Explicitly set Python executable.
 # On Ubuntu 16.04 the default Python is still 2.7.
@@ -63,7 +79,7 @@ if [[ "${BUILD_ENVIRONMENT}" == py3* ]]; then
 fi
 
 case "${BUILD_ENVIRONMENT}" in
-  *-mkl)
+  *-mkl*)
     CMAKE_ARGS+=("-DBLAS=MKL")
     ;;
   *-cuda*)
@@ -99,8 +115,16 @@ if [ "$(uname)" == "Darwin" ]; then
   CMAKE_ARGS+=("-DBUILD_CUSTOM_PROTOBUF=ON")
 fi
 
+# We test the presence of cmake3 (for platforms like Centos and Ubuntu 14.04)
+# and use that if so.
+if [[ -x "$(command -v cmake3)" ]]; then
+    CMAKE_BINARY=cmake3
+else
+    CMAKE_BINARY=cmake
+fi
+
 # Configure
-cmake "${ROOT_DIR}" ${CMAKE_ARGS[*]} "$@"
+${CMAKE_BINARY} "${ROOT_DIR}" ${CMAKE_ARGS[*]} "$@"
 
 # Build
 if [ "$(uname)" == "Linux" ]; then

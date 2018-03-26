@@ -9,15 +9,32 @@ macro(custom_protobuf_find)
     # so we turn it off here.
     set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -Wno-deprecated-declarations")
   endif()
-  # If we are building Caffe2 as shared libs, we will also build protobuf as
-  # shared libs.
-  set(protobuf_BUILD_SHARED_LIBS ${BUILD_SHARED_LIBS})
+  if (${CAFFE2_LINK_LOCAL_PROTOBUF})
+    # If we are going to link protobuf locally, we will need to turn off
+    # shared libs build for protobuf.
+    set(protobuf_BUILD_SHARED_LIBS OFF)
+  else()
+    # If we are building Caffe2 as shared libs, we will also build protobuf as
+    # shared libs.
+    set(protobuf_BUILD_SHARED_LIBS ${BUILD_SHARED_LIBS})
+  endif()
   # We will make sure that protobuf and caffe2 uses the same msvc runtime.
   set(protobuf_MSVC_STATIC_RUNTIME ${CAFFE2_USE_MSVC_STATIC_RUNTIME})
   if (MSVC AND BUILD_SHARED_LIBS)
     add_definitions(-DPROTOBUF_USE_DLLS)
   endif()
+
+  if (${CAFFE2_LINK_LOCAL_PROTOBUF})
+    # We will need to build protobuf with -fPIC.
+    set(__caffe2_protobuf_cmake_fpic ${CMAKE_POSITION_INDEPENDENT_CODE})
+    set(CMAKE_POSITION_INDEPENDENT_CODE ON)
+  endif()
+
   add_subdirectory(${PROJECT_SOURCE_DIR}/third_party/protobuf/cmake)
+
+  if (${CAFFE2_LINK_LOCAL_PROTOBUF})
+    set(CMAKE_POSITION_INDEPENDENT_CODE ${__caffe2_protobuf_cmake_fpic})
+  endif()
 
   # Protobuf "namespaced" target is only added post protobuf 3.5.1. As a
   # result, for older versions, we will manually add alias.
@@ -32,9 +49,13 @@ endmacro()
 # coded BUILD_CUSTOM_PROTOBUF, we will hard code the use of custom protobuf
 # in the submodule.
 if (ANDROID OR IOS)
-  message(STATUS
-      "For Android and iOS cross compilation, I am automatically using "
-      "custom protobuf under third party.")
+  if (NOT ${BUILD_CUSTOM_PROTOBUF})
+    message(WARNING
+        "For Android and iOS cross compilation, I am automatically using "
+        "custom protobuf under third party. Note that this behavior may "
+        "change in the future, and you will need to specify "
+        "-DBUILD_CUSTOM_PROTOBUF=ON explicitly.")
+  endif()
   custom_protobuf_find()
   # Unfortunately, new protobuf does not support libprotoc and protoc
   # cross-compilation so we will need to exclude it.
@@ -69,17 +90,22 @@ if ((NOT TARGET protobuf::libprotobuf) AND (NOT TARGET protobuf::libprotobuf-lit
   #     "Please set the proper paths so that I can find protobuf correctly.")
 endif()
 
-# TODO: enable using lite protobuf.
-list(APPEND Caffe2_DEPENDENCY_LIBS protobuf::libprotobuf)
-
 # Protobuf generated files use <> as inclusion path, so following normal
 # convention we will use SYSTEM inclusion path.
 get_target_property(__tmp protobuf::libprotobuf INTERFACE_INCLUDE_DIRECTORIES)
 message(STATUS "Caffe2 protobuf include directory: " ${__tmp})
 include_directories(SYSTEM ${__tmp})
 
-# Set variable used in cmake installation path.
-set(CAFFE2_BUILT_PROTOBUF_VERSION ${Protobuf_VERSION})
+# If Protobuf_VERSION is known (true in most cases, false if we are building
+# local protobuf), then we will add a protobuf version check in
+# Caffe2Config.cmake.in.
+if (DEFINED ${Protobuf_VERSION})
+  set(CAFFE2_KNOWN_PROTOBUF_VERSION TRUE)
+else()
+  set(CAFFE2_KNOWN_PROTOBUF_VERSION FALSE)
+  set(Protobuf_VERSION "Protobuf_VERSION_NOTFOUND")
+endif()
+
 
 # Figure out which protoc to use.
 # If CAFFE2_CUSTOM_PROTOC_EXECUTABLE is set, we assume the user knows

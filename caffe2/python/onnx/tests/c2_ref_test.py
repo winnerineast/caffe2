@@ -29,8 +29,8 @@ from caffe2.python import core
 from caffe2.proto import caffe2_pb2
 
 import onnx
-from onnx.helper import make_node, make_graph, make_tensor, make_tensor_value_info
-from caffe2.python.onnx.helper import make_model, c2_native_run_net, c2_native_run_op
+from onnx.helper import make_node, make_graph, make_tensor, make_tensor_value_info, make_model
+from caffe2.python.onnx.helper import c2_native_run_net, c2_native_run_op
 
 from onnx import defs, mapping
 import caffe2.python.onnx.frontend as c2_onnx
@@ -49,27 +49,6 @@ class TestCaffe2Basic(TestCase):
         n2 = dummy_name()
         assert n1 != n2, "Got same names in different calls: {}".format(n1)
 
-    def test_relu_node_inplace(self):
-        X = np.random.randn(3, 2).astype(np.float32)
-        Y_ref = np.clip(X, 0, np.inf)
-
-        node_def = make_node(
-            "Relu", ["X"], ["Y"], consumed_inputs=[1])
-        output = c2.run_node(
-            node_def, {"X": X})
-        np.testing.assert_almost_equal(output.X, Y_ref)
-
-        node_def = make_node(
-            "Relu", ["X"], ["Y"], consumed_inputs=[1])
-        graph_def = make_graph(
-            [node_def],
-            name="test",
-            inputs=[make_tensor_value_info("X", onnx.TensorProto.FLOAT, [3, 2])],
-            outputs=[make_tensor_value_info("X", onnx.TensorProto.FLOAT, [3, 2])])
-        c2_rep = c2.prepare(make_model(graph_def))
-        output = c2_rep.run({"X": X})
-        np.testing.assert_almost_equal(output.X, Y_ref)
-
     def test_relu_graph(self):
         X = np.random.randn(3, 2).astype(np.float32)
         Y_ref = np.clip(X, 0, np.inf)
@@ -85,7 +64,7 @@ class TestCaffe2Basic(TestCase):
             name="test",
             inputs=[make_tensor_value_info("X", onnx.TensorProto.FLOAT, [3, 2])],
             outputs=[make_tensor_value_info("Y", onnx.TensorProto.FLOAT, [3, 2])])
-        c2_rep = c2.prepare(make_model(graph_def))
+        c2_rep = c2.prepare(make_model(graph_def, producer_name='caffe2-ref-test'))
         output = c2_rep.run(X)
         np.testing.assert_almost_equal(output.Y, Y_ref)
 
@@ -119,7 +98,7 @@ class TestCaffe2Basic(TestCase):
             return 1 / (1 + np.exp(-x))
 
         W_ref = -sigmoid(np.tanh((X + Y) * weight))
-        c2_rep = c2.prepare(make_model(graph_def))
+        c2_rep = c2.prepare(make_model(graph_def, producer_name='caffe2-ref-test'))
         output = c2_rep.run({"X": X, "Y": Y})
         np.testing.assert_almost_equal(output["W3"], W_ref)
 
@@ -351,6 +330,15 @@ class TestCaffe2End2End(TestCase):
 
     def test_densenet121(self):
         self._test_net('densenet121')
+
+    def test_bvlc_googlenet(self):
+        self._test_net('bvlc_googlenet')
+
+    def test_bvlc_reference_caffenet(self):
+        self._test_net('bvlc_reference_caffenet')
+
+    def test_bvlc_reference_rcnn_ilsvrc13(self):
+        self._test_net('bvlc_reference_rcnn_ilsvrc13')
 
 
 if __name__ == '__main__':

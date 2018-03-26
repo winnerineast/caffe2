@@ -5,8 +5,8 @@ set -ex
 [ -n "$UBUNTU_VERSION" ]
 [ -n "$CUDA_VERSION" ]
 
-# This doesn't actually use any NCCL version yet, it's just hardcoded to
-# 2.1 for now
+# The NCCL version is not encoded in the build environment.
+# This file installs the latest version that works.
 
 # There are only NCCL packages for Ubuntu 16.04 and 14.04
 if [[ "$UBUNTU_VERSION" == 16.04 ]]; then
@@ -30,8 +30,9 @@ if [ -n "$NCCL_UBUNTU_VER" ]; then
   apt-get install -y wget
   dpkg -i "${NCCL_DEB}"
 
-  # Actually installing takes into account CUDA version
-  NCCL_LIB_VERSION="2.1.4-1+cuda${CUDA_VERSION:0:3}"
+  # On March 8, 2018 Nvidia began recommending version 2.1.15
+  NCCL_LIB_VERSION="2.1.15-1+cuda${CUDA_VERSION:0:3}"
+
   apt update
-  apt install libnccl2=$NCCL_LIB_VERSION libnccl-dev=$NCCL_LIB_VERSION
+  apt install -y libnccl2=$NCCL_LIB_VERSION libnccl-dev=$NCCL_LIB_VERSION
 fi

@@ -32,13 +32,14 @@ import logging
 import re
 
 from caffe2.python import core as caffe2_core
+from caffe2.proto import caffe2_legacy_pb2
 from enum import Enum
 from onnx import (defs, checker, helper, numpy_helper, mapping,
                   ModelProto, GraphProto, NodeProto, AttributeProto, TensorProto, OperatorSetIdProto)
-from onnx.helper import make_tensor, make_tensor_value_info
+from onnx.helper import make_tensor, make_tensor_value_info, make_attribute, make_model
 import numpy as np
 
-from caffe2.python.onnx.helper import make_model, c2_native_run_net, dummy_name
+from caffe2.python.onnx.helper import c2_native_run_net, dummy_name
 from caffe2.python.onnx.error import Unsupported
 
 logging.basicConfig(level=logging.INFO)
@@ -50,7 +51,7 @@ class Caffe2Frontend(object):
     # ONNX makes a BC breaking change to semantics of operators, having this set
     # to an accurate number will prevent our models form exporting.  However,
     # we should strive to keep this up-to-date as much as possible.
-    _target_opset_version = 3
+    target_opset_version = 6
 
     _renamed_operators = {
         'SpatialBN': 'BatchNormalization',
@@ -160,11 +161,29 @@ class Caffe2Frontend(object):
         return node
 
     @classmethod
+    def _create_shape_tensor(cls, shape):
+        return make_tensor(name=dummy_name(),
+                           data_type=TensorProto.INT64,
+                           dims=[len(shape)],
+                           vals=np.asarray(shape, dtype=np.int64).tobytes(),
+                           raw=True)
+
+    @classmethod
     def _create_reshape(cls, op_def, shapes):
         node = cls._common_caffe2_op_to_onnx_node(op_def, shapes)
+        const_tensors = []
+
+        attrs = {attr.name: attr for attr in node.attribute}
+        if 'shape' in attrs:
+            shape = attrs.pop('shape').ints
+            shape_tensor = cls._create_shape_tensor(shape)
+            node.input.append(shape_tensor.name)
+            const_tensors.append(shape_tensor)
+        node.attribute[:] = attrs.values()
+
         if len(node.output) == 2:
             del node.output[1]
-        return node
+        return node, const_tensors
 
     @classmethod
     def _create_conv_pool_op(cls, op_def, shapes):
@@ -178,6 +197,7 @@ class Caffe2Frontend(object):
                     break
 
         attrs = {attr.name: attr for attr in node.attribute}
+
         def apply_trans(k, dim=2, ks=None):
             ks = ks or (k + 's')
             if dim == 2:
@@ -211,7 +231,40 @@ class Caffe2Frontend(object):
         apply_trans('stride')
         apply_trans('dilation')
         apply_trans('adj')
-        apply_trans('pad', 4)
+        apply_trans('pad', dim=4)
+
+        legacy_pad_attr = attrs.pop('legacy_pad', None)
+        if legacy_pad_attr:
+            assert node.op_type.endswith('Pool')
+            input_size = shapes[node.input[0]]
+            output_size = shapes[node.output[0]]
+            assert len(output_size) == 4
+            if node.op_type.startswith('Global'):
+                pass
+            elif legacy_pad_attr.i == caffe2_legacy_pb2.NOTSET:
+                pass
+            elif legacy_pad_attr.i == caffe2_legacy_pb2.VALID:
+                assert not 'pads' in attrs
+                new_attr = make_attribute('auto_pad', 'VALID')
+                attrs[new_attr.name] = new_attr
+            elif legacy_pad_attr.i == caffe2_legacy_pb2.SAME:
+                assert not 'pads' in attrs
+                # default behavior in Caffe2 is SAME_UPPER
+                # https://github.com/caffe2/caffe2/blob/master/caffe2/operators/conv_pool_op_base.h#L39
+                new_attr = make_attribute('auto_pad', 'SAME_UPPER')
+                attrs[new_attr.name] = new_attr
+            elif legacy_pad_attr.i == caffe2_legacy_pb2.CAFFE_LEGACY_POOLING:
+                # The problem here is that, Pool op in Caffe may add an additional pixel, if the last part is smaller than stride.
+                # So we use the explicit padding to replace legacy_pad.
+                # pad[end] = output_size[start + 2] * stride[start] - pad[start] - 1 + kernel[start] - input[start + 2]
+                # end = start + len(pad) / 2
+                logger.warning('Converting legacy padding to explicit padding.')
+                for i in range(2):
+                    attrs['pads'].ints[i + 2] = (output_size[i + 2] * attrs['strides'].ints[i] - attrs['pads'].ints[i]
+                                                 - 1 + attrs['kernel_shape'].ints[i] - input_size[i + 2])
+            else:
+                logger.error('Don\'t know how to handle the legacy_pad, while processing operator:\n{}'.format(op_def))
+                raise
 
         del node.attribute[:]
         node.attribute.extend(attrs.values())
@@ -225,16 +278,18 @@ class Caffe2Frontend(object):
         x_shape = list(shapes[x])
 
         nodes = []
+        const_tensors = []
         if 'axis' in args:
             axis = args['axis'].i
             outer = np.prod(x_shape[:axis]).astype(int)
             inner = np.prod(x_shape[axis:]).astype(int)
             reshaped_x = dummy_name()
+            shape_tensor = cls._create_shape_tensor([outer, inner])
+            const_tensors.append(shape_tensor)
             nodes.append(helper.make_node(
                 'Reshape',
-                inputs=[x],
+                inputs=[x, shape_tensor.name],
                 outputs=[reshaped_x],
-                shape=[outer, inner],
             ))
             x = reshaped_x
 
@@ -244,11 +299,12 @@ class Caffe2Frontend(object):
             outer = np.prod(w_shape[:axis_w]).astype(int).item()
             inner = np.prod(w_shape[axis_w:]).astype(int).item()
             reshaped_w = dummy_name()
+            shape_tensor = cls._create_shape_tensor([outer, inner])
+            const_tensors.append(shape_tensor)
             nodes.append(helper.make_node(
                 'Reshape',
-                inputs=[w],
+                inputs=[w, shape_tensor.name],
                 outputs=[reshaped_w],
-                shape=[outer, inner],
             ))
             w = reshaped_w
 
@@ -264,14 +320,15 @@ class Caffe2Frontend(object):
 
         if 'axis' in args:
             axis = args['axis'].i
+            shape_tensor = cls._create_shape_tensor(x_shape[:axis] + [-1])
+            const_tensors.append(shape_tensor)
             nodes.append(helper.make_node(
                 'Reshape',
-                inputs=[gemm_y_output],
+                inputs=[gemm_y_output, shape_tensor.name],
                 outputs=[y],
-                shape=x_shape[:axis] + [-1],
             ))
 
-        return nodes
+        return nodes, const_tensors
 
     @classmethod
     def _create_lrn(cls, op_def, shapes):
@@ -316,13 +373,15 @@ class Caffe2Frontend(object):
         assert c % g == 0
 
         nodes = []
+        const_tensors = []
 
         tmp1 = dummy_name()
+        shape_tensor = cls._create_shape_tensor([n, g, c // g, h, w])
+        const_tensors.append(shape_tensor)
         nodes.append(helper.make_node(
             'Reshape',
-            inputs=[x],
+            inputs=[x, shape_tensor.name],
             outputs=[tmp1],
-            shape=[n, g, c // g, h, w],
         ))
 
         tmp2 = dummy_name()
@@ -333,13 +392,14 @@ class Caffe2Frontend(object):
             perm=[0, 2, 1, 3, 4],
         ))
 
+        shape_tensor = cls._create_shape_tensor([n, c, h, w])
+        const_tensors.append(shape_tensor)
         nodes.append(helper.make_node(
             'Reshape',
-            inputs=[tmp2],
+            inputs=[tmp2, shape_tensor.name],
             outputs=[y],
-            shape=[n, c, h, w],
         ))
-        return nodes
+        return nodes, const_tensors
 
     @classmethod
     def caffe2_op_to_onnx_node(cls, op_def, shapes):
@@ -348,9 +408,12 @@ class Caffe2Frontend(object):
         else:
             translator = cls._common_caffe2_op_to_onnx_node
         nodes = translator(op_def, shapes)
+        const_tensors = []
+        if isinstance(nodes, tuple):
+            nodes, const_tensors = nodes
         if not isinstance(nodes, collections.Iterable):
             nodes = [nodes]
-        return nodes
+        return nodes, const_tensors
 
     @staticmethod
     def _all_names_in_net(net):
@@ -365,6 +428,13 @@ class Caffe2Frontend(object):
             names.update(op.output)
         return names
 
+    @staticmethod
+    def _extract_value_info(tensor):
+        return make_tensor_value_info(
+            name=tensor.name,
+            elem_type=tensor.data_type,
+            shape=tensor.dims)
+
     @classmethod
     def caffe2_net_to_onnx_graph(cls,
                                  predict_net,
@@ -376,6 +446,7 @@ class Caffe2Frontend(object):
             raise ValueError('Please pass value_info as a '
                              'name -> (type, shape) dictionary')
 
+        cls._filter_fake_init(init_net, value_info)
         cls._ssa_rewrite(predict_net, init_net, value_info)
 
         if init_net:
@@ -429,9 +500,10 @@ class Caffe2Frontend(object):
                 blob = ws.FetchBlob(name)
                 if hasattr(blob, 'shape'):
                     shapes[name] = blob.shape
-            graph_def.node.extend(
-                cls.caffe2_op_to_onnx_node(
-                    op, shapes=shapes))
+            nodes, const_tensors = cls.caffe2_op_to_onnx_node(op, shapes=shapes)
+            graph_def.node.extend(nodes)
+            graph_def.initializer.extend(const_tensors)
+            graph_def.input.extend([cls._extract_value_info(tensor) for tensor in const_tensors])
 
         all_output = set(sum((list(node.output) for node in graph_def.node),
                              [init.name for init in graph_def.initializer]))
@@ -448,7 +520,6 @@ class Caffe2Frontend(object):
             for name in predict_net.external_output
             if name in all_output)
 
-        cls._annotate_consumed(graph_def)
         checker.check_graph(graph_def)
         return graph_def
 
@@ -487,22 +558,15 @@ class Caffe2Frontend(object):
         return initializer
 
     @classmethod
-    def _annotate_consumed(cls, graph_def):
-        for node in graph_def.node:
-            schema = defs.get_schema(node.op_type)
-            consumes = []
-            for i, _input_name in enumerate(node.input):
-                consume_type, output_idx = schema.consumed(i)
-                if consume_type == defs.OpSchema.UseType.CONSUME_ENFORCED:
-                    consumes.append(1)
-                else:
-                    consumes.append(0)
-
-            if any(consumes):
-                node.attribute.extend([helper.make_attribute(
-                    'consumed_inputs',
-                    consumes,
-                )])
+    def _filter_fake_init(cls, init_net, value_info):
+        if init_net:
+            fake_inits = [op for op in init_net.op
+                          if len(op.output) == 1 and op.output[0] in value_info and
+                          re.match('GivenTensor.*Fill|ConstantFill', op.type)]
+            for fake_init in fake_inits:
+                init_net.op.remove(fake_init)
+            del fake_inits[:]
+            del fake_inits
 
     @classmethod
     def _ssa_rewrite(cls, net, init_net, value_info):
@@ -511,7 +575,7 @@ class Caffe2Frontend(object):
 
         if init_net:
             for op in init_net.op:
-                assert re.match('GivenTensor.*Fill', op.type)
+                assert re.match('GivenTensor.*Fill', op.type), "type is {}, \n{}".format(op.type, op)
                 assert len(op.output) == 1
                 op.output[0] = ssa_name(op.output[0], 0)
             init_net.external_input[:] = [ssa_name(name, 0)
@@ -537,11 +601,13 @@ class Caffe2Frontend(object):
 
     @classmethod
     def caffe2_net_to_onnx_model(cls, *args, **kwargs):
-        model = make_model(cls.caffe2_net_to_onnx_graph(*args, **kwargs))
         opset_id = OperatorSetIdProto()
-        opset_id.domain = ''  # ONNX
-        opset_id.version = cls._target_opset_version
-        model.opset_import.extend([opset_id])
+        opset_id.domain = ''  # ONNX default domain
+        opset_id.version = cls.target_opset_version
+        model = make_model(cls.caffe2_net_to_onnx_graph(*args, **kwargs),
+                           opset_imports=[opset_id],  # current supported opset version
+                           producer_name='onnx-caffe2',  # producer name
+                           )
         checker.check_model(model)
         return model
 

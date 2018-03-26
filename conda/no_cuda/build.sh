@@ -22,21 +22,22 @@ set -ex
 
 echo "Installing caffe2 to ${PREFIX}"
 
+# This is needed for build variants (packages with multiple variants in 
+# conda_build_config.yaml) to remove any files that cmake cached, since
+# conda-build uses the same environment for all the build variants
+rm -rf build
+
 PYTHON_ARGS="$(python ./scripts/get_python_cmake_flags.py)"
 CMAKE_ARGS=()
-
-# Default leveldb from conda-forge doesn't work. If you want to use leveldb,
-# use this old pip version
-# pip install leveldb==0.18
-CMAKE_ARGS+=("-DUSE_LEVELDB=OFF")
 
 # This installation defaults to using MKL because it is much faster. If you
 # want to build without MKL then you should also remove mkl from meta.yaml in
 # addition to removing the flags below
 CMAKE_ARGS+=("-DBLAS=MKL")
 
-# There is a separate build folder for CUDA builds
+# Minimal packages
 CMAKE_ARGS+=("-DUSE_CUDA=OFF")
+CMAKE_ARGS+=("-DUSE_MPI=OFF")
 CMAKE_ARGS+=("-DUSE_NCCL=OFF")
 
 # Install under specified prefix
@@ -45,7 +46,7 @@ CMAKE_ARGS+=("-DCMAKE_PREFIX_PATH=$PREFIX")
 
 mkdir -p build
 cd build
-cmake "${CMAKE_ARGS[@]}"  $CONDA_CMAKE_ARGS $PYTHON_ARGS ..
+cmake "${CMAKE_ARGS[@]}"  $CONDA_CMAKE_BUILD_ARGS $PYTHON_ARGS ..
 if [ "$(uname)" == 'Darwin' ]; then
   make "-j$(sysctl -n hw.ncpu)"
 else

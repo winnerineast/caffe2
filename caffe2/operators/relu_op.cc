@@ -71,7 +71,7 @@ namespace {
 OpSchema::Cost CostInferenceForRelu(
     const OperatorDef& def,
     const vector<TensorShape>& in) {
-  struct OpSchema::Cost cost = PointwiseCostInference<2>(def, in);
+  struct OpSchema::Cost cost = PointwiseCostInference<0>(def, in);
   if (def.input(0) == def.output(0)) {
     cost.bytes_moved = 0;
   }
@@ -96,7 +96,8 @@ Relu takes one input data (Tensor<T>) and produces one output data
 the tensor elementwise.
 )DOC")
     .Input(0, "X", "1D input tensor")
-    .Output(0, "Y", "1D input tensor");
+    .Output(0, "Y", "1D input tensor")
+    .InheritOnnxSchema("Relu");
 
 // Input: Y, dY, output: dX
 OPERATOR_SCHEMA(ReluGradient)

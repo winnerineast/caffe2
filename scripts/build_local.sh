@@ -11,6 +11,11 @@ CAFFE2_ROOT="$( cd "$(dirname "$0")"/.. ; pwd -P)"
 
 CMAKE_ARGS=()
 
+# If Ninja is installed, prefer it to Make
+if [ -x "$(command -v ninja)" ]; then
+  CMAKE_ARGS+=("-GNinja")
+fi
+
 # Use ccache if available (this path is where Homebrew installs ccache symlinks)
 if [ "$(uname)" == 'Darwin' ]; then
   CCACHE_WRAPPER_PATH=/usr/local/opt/ccache/libexec
@@ -22,7 +27,9 @@ fi
 
 # Use special install script with Anaconda
 if [ -n "${USE_ANACONDA}" ]; then
-  conda build "$CAFFE2_ROOT/conda"
+  export SKIP_CONDA_TESTS=1
+  export CONDA_INSTALL_LOCALLY=1
+  "${ROOT_DIR}/scripts/build_anaconda.sh" "$@"
 else
   # Build protobuf compiler from third_party if configured to do so
   if [ -n "${USE_HOST_PROTOC:-}" ]; then
@@ -40,6 +47,7 @@ else
   echo "Building Caffe2 in: $BUILD_ROOT"
 
   cmake "$CAFFE2_ROOT" \
+        -DCMAKE_BUILD_TYPE=Release \
         "${CMAKE_ARGS[@]}" \
         "$@"
 

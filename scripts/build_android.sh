@@ -48,6 +48,11 @@ cd $BUILD_ROOT
 
 CMAKE_ARGS=()
 
+# If Ninja is installed, prefer it to Make
+if [ -x "$(command -v ninja)" ]; then
+  CMAKE_ARGS+=("-GNinja")
+fi
+
 # Use locally built protoc because we'll build libprotobuf for the
 # target architecture and need an exact version match.
 CMAKE_ARGS+=("-DCAFFE2_CUSTOM_PROTOC_EXECUTABLE=$CAFFE2_ROOT/build_host_protoc/bin/protoc")
@@ -61,7 +66,6 @@ CMAKE_ARGS+=("-DBUILD_BINARY=OFF")
 CMAKE_ARGS+=("-DBUILD_PYTHON=OFF")
 CMAKE_ARGS+=("-DBUILD_SHARED_LIBS=OFF")
 CMAKE_ARGS+=("-DANDROID_TOOLCHAIN=gcc")
-
 # Disable unused dependencies
 CMAKE_ARGS+=("-DUSE_CUDA=OFF")
 CMAKE_ARGS+=("-DUSE_GFLAGS=OFF")
@@ -85,20 +89,8 @@ CMAKE_ARGS+=("-DANDROID_CPP_FEATURES=rtti exceptions")
 # we disable USE_MOBILE_OPENGL for now, it will be re-enabled in the future.
 CMAKE_ARGS+=("-DUSE_MOBILE_OPENGL=OFF")
 
-# Compiler flags
+# Use-specified CMake arguments go last to allow overridding defaults
 CMAKE_ARGS+=($@)
-USE_GCC=true
-CMAKE_ARGS+=("-DCMAKE_C_FLAGS=")
-for arg in ${CMAKE_ARGS[@]};do
-  if [ $arg == "-DANDROID_TOOLCHAIN=clang" ];then
-    USE_GCC=false
-  elif [ $arg == "-DANDROID_TOOLCHAIN=gcc" ];then
-    USE_GCC=true
-  fi
-done
-if $USE_GCC;then
-  CMAKE_ARGS+=("-DCMAKE_CXX_FLAGS=-s")
-fi
 
 cmake "$CAFFE2_ROOT" \
     -DCMAKE_INSTALL_PREFIX=../install \
